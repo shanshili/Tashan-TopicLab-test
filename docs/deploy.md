@@ -16,18 +16,20 @@ The deploy workflow (`.github/workflows/deploy.yml`) runs on push to `main`. It 
 
 ### Configuring `DEPLOY_ENV`
 
-`DEPLOY_ENV` is the entire contents of the `.env` file. Create it locally, then paste into the secret.
+`DEPLOY_ENV` 即线上环境的完整 `.env` 内容。本地创建后粘贴到 Secret。
 
-**Steps:**
+**步骤：**
 
-1. 复制 `.env.deploy.example` 为 `.env.deploy`，按实际环境填写（含 API 密钥等）：
+1. 复制 `.env.deploy.example` 为 `.env.deploy`，按线上环境填写（含 API 密钥）：
    ```bash
    cp .env.deploy.example .env.deploy
    # 编辑 .env.deploy，填写 ANTHROPIC_API_KEY、AI_GENERATION_API_KEY 等
    ```
 
-2. 在 GitHub：**Settings → Secrets and variables → Actions → New repository secret**
+2. GitHub：**Settings → Secrets and variables → Actions → New repository secret**
 3. 名称填 `DEPLOY_ENV`，值粘贴 `.env.deploy` 的完整内容（多行）
+
+**说明**：`.env.deploy.example` 为线上模板，与本地 `.env.example` 结构一致；线上需使用真实 API 密钥，勿用 `test` 占位。
 
 ### Server Requirements
 

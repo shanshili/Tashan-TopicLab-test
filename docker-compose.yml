@@ -9,7 +9,8 @@ services:
     environment:
       - WORKSPACE_BASE=/app/workspace
     volumes:
-      - ${WORKSPACE_PATH:-./backend/workspace}:/app/workspace
+      - ${WORKSPACE_PATH:-./workspace}:/app/workspace
+      - ${LIBS_PATH:-./backend/libs}:/app/libs
     networks:
       - app-network
 
