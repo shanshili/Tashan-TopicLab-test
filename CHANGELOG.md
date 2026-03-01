@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-01
+
+### Added
+
+**Backend (Resonnet 0.3.0)**
+
+- Expert share to platform: `POST /topics/{id}/experts/{name}/share` — share topic expert to `libs/experts/topiclab_shared/`
+- Moderator mode share to platform: `POST /topics/{id}/moderator-mode/share` — share custom mode to `libs/moderator_modes/topiclab_shared/`
+- Topic-level moderator config: `skill_list`, `mcp_server_ids`, `model` persisted per topic
+- Discussion params: `skill_list`, `mcp_server_ids`, `allowed_tools` in start-discussion request
+
+**Frontend**
+
+- Expert card portal menu: edit/share actions on expert cards; 「共享」shares to platform library
+- Moderator mode share: 「共享到讨论方式库」dialog in TopicConfigTabs/ModeratorModeConfig; `mode_id`, `name`, `description` input
+- AI discussion tab UX: rename to 「AI讨论」; shortcut button; expanded description; hide when started; nudge animation
+- `topicExpertsApi.share()`, `moderatorModesApi.share()`; refetch experts list after share
+
+**Docs**
+
+- `docs/share-flow-sequence.md` — expert share and moderator mode share sequence diagrams
+- `docs/deploy.md` — `.env.deploy.example`, nginx config, deploy workflow
+
+### Fixed
+
+- **Backend**: Expert share no longer returns 500 when `topiclab_shared/meta.json` does not exist (first share)
+- TopNav mobile width and overflow on small viewports
+- UI validation messages and input constraints
+
+### Changed
+
+- ExpertList/ExpertSelector: `onShare` callback; refetch after share
+- ExpertGrid: show share action for non-preset experts (`source !== 'preset'`)
+
 ## [1.1.0] - 2026-02-21
 
 ### Added

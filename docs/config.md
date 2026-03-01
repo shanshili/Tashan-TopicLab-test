@@ -34,6 +34,8 @@ Used for:
 
 All libraries (experts, moderator_modes, mcps, assignable_skills, prompts) are loaded from `backend/libs/`. No scenario preset.
 
+**Docker**: When `LIBS_PATH` points to a custom empty directory (e.g. for persistence), the backend merges from both built-in and the mount. See [backend/docs/config.md](backend/docs/config.md) for details.
+
 ### 4. Workspace (optional)
 
 ```bash
