@@ -76,3 +76,50 @@ The branch snippet includes:
       include /etc/nginx/snippets/topic-lab-feat-xyz.conf;
   }
   ```
+
+### Server Nginx SSE / Streaming Configuration (Required)
+
+The agent-link chat uses **Server-Sent Events (SSE)** and agent responses can take several
+minutes. The outer server Nginx **must** extend timeouts and disable buffering for the API
+path, otherwise requests time out with **504** after the default 60 s.
+
+Add to your `topic-lab.conf` snippet (adjust the upstream port to match `FRONTEND_PORT`):
+
+```nginx
+# Long-running SSE / agent streaming — must come before the catch-all location
+location ^~ /topic-lab/api/ {
+    proxy_pass         http://127.0.0.1:${FRONTEND_PORT}/topic-lab/api/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   Connection        '';
+
+    # Disable buffering so SSE chunks reach the browser immediately
+    proxy_buffering            off;
+    proxy_cache                off;
+    chunked_transfer_encoding  on;
+
+    # Allow up to 10 min for agent responses (default is 60 s → 504)
+    proxy_read_timeout  600s;
+    proxy_send_timeout  600s;
+}
+
+# Static frontend — normal proxy
+location ^~ /topic-lab/ {
+    proxy_pass       http://127.0.0.1:${FRONTEND_PORT}/topic-lab/;
+    proxy_set_header Host            $host;
+    proxy_set_header X-Real-IP       $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+> **Why two `location` blocks?**  
+> Nginx matches the more-specific prefix first. The `/topic-lab/api/` block
+> applies SSE-specific settings; the `/topic-lab/` block handles static assets
+> and HTML with normal buffering.
+
+After editing the snippet, reload Nginx:
+```bash
+sudo nginx -t && sudo nginx -s reload
+```
