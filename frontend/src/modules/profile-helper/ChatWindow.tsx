@@ -256,7 +256,6 @@ export function ChatWindow() {
             }}
             placeholder="输入消息，Enter 发送，Shift+Enter 换行"
             rows={2}
-            disabled={loading}
           />
           <button type="submit" disabled={loading || !input.trim()}>
             {loading ? '发送中...' : '发送'}

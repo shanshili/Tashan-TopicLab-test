@@ -271,11 +271,6 @@ export function AgentLinkChatWindow({ slug }: AgentLinkChatWindowProps) {
     }
   }
 
-  const handleInsertPath = (path: string) => {
-    setInput((prev) => `${prev}${prev ? '\n' : ''}\`${path}\``)
-    inputRef.current?.focus()
-  }
-
   const userHistory = useMemo(
     () => feed
       .filter((item): item is Extract<FeedItem, { kind: 'user' }> => item.kind === 'user')
@@ -415,7 +410,6 @@ export function AgentLinkChatWindow({ slug }: AgentLinkChatWindowProps) {
             }}
             placeholder="Message agent. Enter to send, Shift+Enter for newline."
             rows={3}
-            disabled={loading}
           />
           <div className="agent-input-toolbar">
             <div className="agent-input-left">
@@ -459,9 +453,9 @@ export function AgentLinkChatWindow({ slug }: AgentLinkChatWindowProps) {
         {uploadedFiles.length > 0 ? (
           <div className="agent-upload-inline">
             {uploadedFiles.slice(-4).map((f) => (
-              <button key={f.path} type="button" className="agent-upload-chip" onClick={() => handleInsertPath(f.path)}>
+              <span key={f.path} className="agent-upload-chip">
                 {f.path} ({humanBytes(f.size)})
-              </button>
+              </span>
             ))}
           </div>
         ) : null}
