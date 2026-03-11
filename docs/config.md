@@ -44,7 +44,36 @@ WORKSPACE_BASE=./workspace
 
 Topic workspace root directory.
 
-### 5. MCP 库 (只读)
+### 5. 用户认证（topiclab-backend，可选）
+
+```bash
+DATABASE_URL=postgresql://user:pass@host:5432/topiclab
+PGSSLMODE=disable
+JWT_SECRET=your-secret-key-change-in-production
+# 短信验证码（可选，不填则开发模式，验证码打印到日志）
+SMSBAO_USERNAME=
+SMSBAO_PASSWORD=
+# Resonnet backend 转发鉴权到账号服务
+AUTH_SERVICE_BASE_URL=http://topiclab-backend:8000
+```
+
+- **DATABASE_URL**：PostgreSQL 连接串，用于 `users`、`verification_codes` 表。不填则使用内存存储（开发模式）。
+- **JWT_SECRET**：JWT 签发密钥，生产环境务必修改。
+- **SMSBAO_***：短信宝 API（https://www.smsbao.com/），用于发送验证码。`SMSBAO_PASSWORD` 填登录密码，程序会自动 MD5 后调用。不填则开发模式，验证码显示在页面/打印到日志。
+- **AUTH_SERVICE_BASE_URL**：Resonnet backend 校验 Bearer Token 时调用的账号服务地址（默认 `http://topiclab-backend:8000`）。
+
+账号服务运行在独立的 `topiclab-backend` 容器，与 Resonnet（topics、discussion 等）分离。Nginx 将 `/topic-lab/api/auth/` 代理到 topiclab-backend。
+
+### 6. 科研数字分身采集助手（Profile Helper Agent）
+
+```bash
+# 单次用户请求内部最多允许的工具/思考循环轮数（默认 40，下限 5）
+PROFILE_HELPER_MAX_TOOL_ITERATIONS=40
+```
+
+- **PROFILE_HELPER_MAX_TOOL_ITERATIONS**：控制 Profile Helper 内部 agent 循环的最大轮数。适当调大可以减少「达到最大工具调用次数」报错，但也会增加单次请求耗时与 token 消耗。推荐范围 20–60。
+
+### 7. MCP 库 (只读)
 
 MCP 服务器在 `backend/libs/mcps/` 中配置，与技能库结构一致。MCP 库页面 `/mcp` 只读展示，话题讨论时可选择启用的 MCP。仅接受 npm、uvx、remote。参见 [backend/docs/mcp-config.md](backend/docs/mcp-config.md)。
 
