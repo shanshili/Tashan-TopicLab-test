@@ -49,3 +49,6 @@ frontend/.vite/
 workspace/agent_links_sessions/
 
 Tashan-TopicLab-main_0/
+
+.codex
+.DS_Store
