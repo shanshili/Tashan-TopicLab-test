@@ -12,7 +12,10 @@ The deploy workflow (`.github/workflows/deploy.yml`) runs on push to `main`. It 
 | `DEPLOY_USER` | SSH username |
 | `SSH_PRIVATE_KEY` | SSH private key for authentication |
 | `DEPLOY_ENV` | **Full `.env` content** (see below) |
+| `SUBMODULE_TOKEN` | GitHub token used for nested private submodules (fallback: `GITHUB_TOKEN`) |
 | `DEPLOY_PATH` | (Optional) Base path on server, default `/var/www/github-actions/repos` |
+
+`SUBMODULE_TOKEN` should have read access to all nested skill repositories used by `backend/libs/assignable_skills/_submodules/`, including `K-Dense-AI/claude-scientific-skills`.
 
 ### Configuring `DEPLOY_ENV`
 

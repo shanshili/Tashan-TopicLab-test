@@ -1,4 +1,14 @@
 services:
+  topiclab-backend:
+    build:
+      context: ./topiclab-backend
+    env_file:
+      - .env
+    ports:
+      - "${TOPICLAB_BACKEND_PORT:-8001}:8000"
+    networks:
+      - app-network
+
   backend:
     build:
       context: ./backend
@@ -23,6 +33,7 @@ services:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       - backend
+      - topiclab-backend
     networks:
       - app-network
 

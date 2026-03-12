@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Deploy to Server
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.0.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -36,7 +36,8 @@ jobs:
             REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
             if [ ! -d "$REPO_DIR/.git" ]; then
               mkdir -p "$BASE_DIR"
-              for i in 1 2 3; do git clone --recurse-submodules "$REPO_URL" "$REPO_DIR" && break || sleep 5; done
+              # Clone without recursing first; nested submodule auth is configured below.
+              for i in 1 2 3; do git clone "$REPO_URL" "$REPO_DIR" && break || sleep 5; done
             fi
             cd "$REPO_DIR"
             git remote set-url origin "$REPO_URL"
@@ -48,9 +49,11 @@ jobs:
             for i in 1 2 3; do git fetch origin && break || { [ $i -eq 3 ] && echo "git fetch failed after 3 retries" && exit 1; sleep 5; }; done
             git reset --hard origin/main
             git submodule update --init backend
+            git submodule sync --recursive
             git config -f .git/modules/backend/config submodule.libs/assignable_skills/_submodules/ai-research.url "https://x-access-token:${SUBMODULE_AUTH}@github.com/Orchestra-Research/AI-Research-SKILLs.git"
             git config -f .git/modules/backend/config submodule.libs/assignable_skills/_submodules/anthropics.url "https://x-access-token:${SUBMODULE_AUTH}@github.com/anthropics/skills.git"
-            git submodule sync --recursive
+            git config -f .git/modules/backend/config submodule.libs/assignable_skills/_submodules/claude-scientific.url "https://x-access-token:${SUBMODULE_AUTH}@github.com/K-Dense-AI/claude-scientific-skills.git"
+            git config -f .git/modules/backend/config --get submodule.libs/assignable_skills/_submodules/claude-scientific.url | sed -E 's#x-access-token:[^@]+@#x-access-token:***@#'
             git submodule update --init --recursive
 
             if [ -z "${DEPLOY_ENV:-}" ]; then
