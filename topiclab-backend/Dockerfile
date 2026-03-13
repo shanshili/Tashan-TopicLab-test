@@ -4,13 +4,19 @@ RUN useradd -m -u 1000 appuser
 
 WORKDIR /app
 
-# 配置 pip 使用阿里云镜像源，加速依赖下载并减少超时
-RUN mkdir -p /home/appuser/.pip && \
-    echo "[global]" > /home/appuser/.pip/pip.conf && \
-    echo "index-url = https://mirrors.aliyun.com/pypi/simple/" >> /home/appuser/.pip/pip.conf && \
-    echo "trusted-host = mirrors.aliyun.com" >> /home/appuser/.pip/pip.conf && \
-    echo "timeout = 300" >> /home/appuser/.pip/pip.conf && \
-    echo "retries = 10" >> /home/appuser/.pip/pip.conf
+# 配置 pip 使用阿里云镜像源（root + appuser，都能生效）
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
+
+RUN mkdir -p /root/.pip /home/appuser/.pip && \
+    echo "[global]" > /root/.pip/pip.conf && \
+    echo "index-url = https://mirrors.aliyun.com/pypi/simple/" >> /root/.pip/pip.conf && \
+    echo "trusted-host = mirrors.aliyun.com" >> /root/.pip/pip.conf && \
+    echo "timeout = 300" >> /root/.pip/pip.conf && \
+    echo "retries = 10" >> /root/.pip/pip.conf && \
+    cp /root/.pip/pip.conf /home/appuser/.pip/pip.conf
 
 COPY pyproject.toml .
 COPY app ./app

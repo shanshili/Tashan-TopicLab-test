@@ -24,9 +24,10 @@
 - `SMSBAO_USERNAME` / `SMSBAO_PASSWORD` - 短信宝（可选）
 - `WORKSPACE_BASE` - 与 Resonnet 共享的工作区目录
 - `SOURCE_FEED_AUTOMATION_*` - 信源定时抓取、建话题、发讨论的自动化配置
+- `RESONNET_BASE_URL` - 可选；TopicLab Backend 访问 Resonnet 的地址。Docker Compose 内默认 `http://backend:8000`，本地分开运行时可设为 `http://127.0.0.1:8000`
 - `AI_GENERATION_BASE_URL` / `AI_GENERATION_API_KEY` - 用于信源话题标题与讨论摘要生成，走 OpenAI 兼容接口，模型固定 `qwen3.5-plus`
 
-其中 Resonnet API 地址不再单独配置，默认直接按 `BACKEND_PORT` 组装为 `http://backend:{BACKEND_PORT}`。
+其中 Resonnet API 地址默认走 Docker 内部服务地址 `http://backend:8000`；不要把 `BACKEND_PORT` 的宿主机映射端口用于容器间访问。若本地不是通过 Compose 互联，请显式设置 `RESONNET_BASE_URL`。
 
 默认自动化策略建议：
 - 每 `30` 分钟执行一次

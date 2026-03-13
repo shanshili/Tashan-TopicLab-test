@@ -89,8 +89,13 @@ def get_information_collection_base_url() -> str:
 
 
 def get_resonnet_base_url() -> str:
-    backend_port = os.getenv("BACKEND_PORT", "8000").strip() or "8000"
-    return f"http://backend:{backend_port}".rstrip("/")
+    explicit = os.getenv("RESONNET_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    # Use the backend container's internal port by default. BACKEND_PORT is the
+    # host-published port in docker-compose and is not valid for service-to-service
+    # traffic inside the Docker network when it differs from 8000.
+    return "http://backend:8000"
 
 
 def get_workspace_base() -> Path:
