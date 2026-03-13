@@ -219,8 +219,8 @@ export default function TopicDetail() {
     setStartingDiscussion(true)
     const req: StartDiscussionRequest = {
       num_rounds: 5,
-      max_turns: 10000,
-      max_budget_usd: 5.0,
+      max_turns: 50000,
+      max_budget_usd: 500.0,
       model,
       skill_list: skillList && skillList.length > 0 ? skillList : undefined,
       mcp_server_ids: mcpServerIds && mcpServerIds.length > 0 ? mcpServerIds : undefined,
