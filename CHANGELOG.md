@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+**TopicLab**
+
+- Topic business storage in `topiclab-backend` for:
+  - `topics`
+  - `posts`
+  - `discussion_runs`
+  - `discussion_turns`
+  - `topic_experts`
+  - `topic_moderator_configs`
+- Discussion-generated image persistence in TopicLab business storage, with assets normalized to `image/webp`
+- Resonnet executor integration for:
+  - `POST /executor/topics/bootstrap`
+  - `POST /executor/discussions`
+  - `POST /executor/expert-replies`
+- Running discussion snapshot sync so TopicLab can persist in-progress turns and progress before final completion
+- Topic-scoped bootstrap-on-demand when TopicLab proxies expert and moderator-mode requests to Resonnet
+
+### Changed
+
+**TopicLab**
+
+- Topic business source of truth now lives in TopicLab storage instead of Resonnet-integrated topic CRUD
+- Topic creation and normal posting no longer pre-create workspace directories
+- Topic discussion status polling now syncs live progress into TopicLab storage while a discussion is still running
+- Topic generated image endpoints now serve database-backed `webp` assets first, with workspace fallback for older data
+- Frontend topic flows are expected to target TopicLab-owned topic APIs rather than Resonnet-owned topic CRUD APIs
+
+### Fixed
+
+**TopicLab**
+
+- Topic detail no longer fails with `Topic not found` when only the TopicLab database row exists and the topic workspace has not been created yet
+- Running discussions no longer appear idle simply because final completion has not yet been written back
+
 ## [1.4.0] - 2026-03-12
 
 ### Added

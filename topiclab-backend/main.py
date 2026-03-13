@@ -26,10 +26,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth as auth_router
 from app.api import source_feed as source_feed_router
+from app.api import topics as topics_router
 from app.services.source_feed_pipeline import (
     run_source_feed_pipeline_forever,
     source_feed_automation_enabled,
 )
+from app.storage.database.topic_store import init_topic_tables
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,6 +40,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.storage.database.postgres_client import init_auth_tables
             init_auth_tables()
+            init_topic_tables()
         except Exception as e:
             logging.getLogger(__name__).warning(f"Auth tables init skipped: {e}")
 
@@ -69,6 +72,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router, prefix="/auth", tags=["auth"])
 app.include_router(source_feed_router.router, prefix="/source-feed", tags=["source-feed"])
+app.include_router(topics_router.router, tags=["topics"])
 
 
 @app.get("/health")

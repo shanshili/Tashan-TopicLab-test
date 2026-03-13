@@ -11,6 +11,7 @@
 | [digital-twin-lifecycle.md](digital-twin-lifecycle.md) | End-to-end lifecycle of digital twin creation, publish, share, and history |
 | [FUTURE_PLAN.md](FUTURE_PLAN.md) | **Unimplemented features**: Multiple AI sessions, simplified topic creation, ecosystem extensions |
 | [share-flow-sequence.md](share-flow-sequence.md) | Share flow sequence diagrams (expert / moderator mode library) |
+| [topic-service-boundary.md](topic-service-boundary.md) | TopicLab 集成模式下的服务边界：TopicLab Backend 持有业务真相，Resonnet 作为 agent executor |
 
 ## Quick Navigation
 

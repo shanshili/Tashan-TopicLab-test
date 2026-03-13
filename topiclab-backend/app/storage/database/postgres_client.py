@@ -1,4 +1,4 @@
-"""PostgreSQL client for auth (users, verification_codes). Uses DATABASE_URL from .env."""
+"""Database client for TopicLab backend. Uses DATABASE_URL from .env."""
 
 import os
 import logging
@@ -11,18 +11,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
 logger = logging.getLogger(__name__)
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 PGSSLMODE = os.getenv("PGSSLMODE", "disable")
 
 
 def _get_engine_url() -> Optional[str]:
     """Return DATABASE_URL with sslmode appended if not present."""
-    if not DATABASE_URL:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
         return None
-    parsed = urlparse(DATABASE_URL)
+    parsed = urlparse(database_url)
     query = parse_qs(parsed.query)
-    if "sslmode" not in query and PGSSLMODE:
+    if parsed.scheme.startswith("postgresql") and "sslmode" not in query and PGSSLMODE:
         query["sslmode"] = [PGSSLMODE]
         new_query = urlencode(query, doseq=True)
         parsed = parsed._replace(query=new_query)
@@ -41,13 +40,14 @@ def get_engine():
     url = _get_engine_url()
     if not url:
         raise ValueError("DATABASE_URL is not set")
-    _engine = create_engine(
-        url,
-        poolclass=QueuePool,
-        pool_size=5,
-        max_overflow=10,
-        pool_pre_ping=True,
-    )
+    kwargs = {"pool_pre_ping": True}
+    if url.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        kwargs["poolclass"] = QueuePool
+        kwargs["pool_size"] = 5
+        kwargs["max_overflow"] = 10
+    _engine = create_engine(url, **kwargs)
     return _engine
 
 
@@ -128,3 +128,12 @@ def init_auth_tables():
             ON digital_twins(user_id)
         """))
     logger.info("Auth tables initialized")
+
+
+def reset_db_state():
+    """Dispose cached engine/sessionmaker so tests can swap DATABASE_URL."""
+    global _engine, _SessionLocal
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _SessionLocal = None
