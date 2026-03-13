@@ -8,6 +8,7 @@ import logging
 import os
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -377,6 +378,19 @@ async def select_candidate_articles(limit: int = DEFAULT_FETCH_LIMIT, select_cou
         except Exception as exc:
             logger.warning("Skip article %s due to detail fetch error: %s", item.id, exc)
     detailed.sort(key=_score_article, reverse=True)
+    if detailed:
+        logger.info(
+            "Ranked source-feed candidates: %s",
+            [
+                {
+                    "article_id": article.id,
+                    "score": _score_article(article),
+                    "source_feed_name": article.source_feed_name,
+                    "title": _trim(article.title, 48),
+                }
+                for article in detailed[: min(10, len(detailed))]
+            ],
+        )
     return detailed[:select_count]
 
 
@@ -474,24 +488,47 @@ async def _resonnet_start_discussion(client: httpx.AsyncClient, topic_id: str) -
 
 
 async def create_topic_from_article(article: SourceArticle, start_discussion: bool = True) -> dict[str, Any]:
+    score = _score_article(article)
+    logger.info(
+        "Creating topic from source article: article_id=%s score=%s source=%s title=%s start_discussion=%s",
+        article.id,
+        score,
+        article.source_feed_name,
+        _trim(article.title, 80),
+        start_discussion,
+    )
     generated = await generate_topic_bundle(article)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         created = await _resonnet_create_topic(client, generated["topic_title"], generated["discussion_summary_markdown"])
         topic_id = created["id"]
+        logger.info(
+            "Created topic shell: topic_id=%s article_id=%s topic_title=%s",
+            topic_id,
+            article.id,
+            _trim(generated["topic_title"], 80),
+        )
         material_info = await hydrate_topic_workspace(topic_id, [article.id])
         body = _build_topic_body(article, generated, material_info["written_files"])
         patched = await _resonnet_patch_topic_body(client, topic_id, body)
+        logger.info(
+            "Hydrated topic workspace and patched body: topic_id=%s material_paths=%s",
+            topic_id,
+            material_info["written_files"],
+        )
 
         discussion = None
         if start_discussion:
+            logger.info("Starting discussion for auto-created topic: topic_id=%s article_id=%s", topic_id, article.id)
             discussion = await _resonnet_start_discussion(client, topic_id)
+            logger.info("Started discussion for topic: topic_id=%s status=%s", topic_id, discussion.get("status"))
 
     return {
         "topic_id": topic_id,
         "article_id": article.id,
         "article_title": article.title,
         "topic_title": patched["title"],
+        "score": score,
         "material_paths": material_info["written_files"],
         "discussion_started": bool(discussion),
         "discussion_status": discussion["status"] if isinstance(discussion, dict) and discussion.get("status") else None,
@@ -525,17 +562,41 @@ async def run_source_feed_pipeline(
     start_discussion: bool = True,
     force: bool = False,
 ) -> dict[str, Any]:
+    logger.info(
+        "Source-feed pipeline run started: limit=%s select_count=%s start_discussion=%s force=%s",
+        limit,
+        select_count,
+        start_discussion,
+        force,
+    )
     state = _load_state()
     processed = {int(item) for item in state.get("processed_article_ids", [])}
     processed_signatures = set(state.get("processed_signatures", []))
-    selected = await select_candidate_articles(limit=limit, select_count=select_count)
+    ranked_candidates = await select_candidate_articles(limit=limit, select_count=limit)
 
     created_topics: list[dict[str, Any]] = []
     skipped_articles: list[int] = []
+    inspected_articles: list[dict[str, Any]] = []
 
-    for article in selected:
+    for article in ranked_candidates:
+        if len(created_topics) >= select_count:
+            break
         signature = _article_signature(article)
+        score = _score_article(article)
+        inspected_articles.append(
+            {
+                "article_id": article.id,
+                "score": score,
+                "title": _trim(article.title, 48),
+            }
+        )
         if (article.id in processed or signature in processed_signatures) and not force:
+            logger.info(
+                "Skip already-processed source article and continue to next ranked candidate: article_id=%s score=%s title=%s",
+                article.id,
+                score,
+                _trim(article.title, 80),
+            )
             skipped_articles.append(article.id)
             continue
         created = await create_topic_from_article(article, start_discussion=start_discussion)
@@ -543,20 +604,32 @@ async def run_source_feed_pipeline(
         processed.add(article.id)
         processed_signatures.add(signature)
         state.setdefault("topics_by_article_id", {})[str(article.id)] = created["topic_id"]
+        logger.info(
+            "Created topic from ranked candidate: article_id=%s topic_id=%s score=%s rank=%s",
+            article.id,
+            created["topic_id"],
+            score,
+            len(inspected_articles),
+        )
 
     state["processed_article_ids"] = sorted(processed)[-500:]
     state["processed_signatures"] = sorted(processed_signatures)[-500:]
     _save_state(state)
-    return {
-        "selected_count": len(selected),
+    result = {
+        "selected_count": min(len(ranked_candidates), select_count),
+        "inspected_count": len(inspected_articles),
+        "ranked_candidate_count": len(ranked_candidates),
         "created_count": len(created_topics),
         "skipped_article_ids": skipped_articles,
         "created_topics": created_topics,
     }
+    logger.info("Source-feed pipeline run completed: %s", result)
+    return result
 
 
 async def run_source_feed_pipeline_forever() -> None:
     while True:
+        interval_seconds = source_feed_automation_interval_seconds()
         try:
             result = await run_source_feed_pipeline(
                 limit=int(os.getenv("SOURCE_FEED_AUTOMATION_FETCH_LIMIT", str(DEFAULT_FETCH_LIMIT))),
@@ -566,4 +639,10 @@ async def run_source_feed_pipeline_forever() -> None:
             logger.info("Source-feed automation finished: %s", result)
         except Exception as exc:
             logger.exception("Source-feed automation failed: %s", exc)
-        await asyncio.sleep(source_feed_automation_interval_seconds())
+        next_run_at = datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+        logger.info(
+            "Source-feed automation sleeping: sleep_seconds=%s next_run_at_utc=%s",
+            interval_seconds,
+            next_run_at.isoformat(),
+        )
+        await asyncio.sleep(interval_seconds)
