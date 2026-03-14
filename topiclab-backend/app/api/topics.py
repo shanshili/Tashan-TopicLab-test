@@ -17,7 +17,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.api.auth import security, verify_jwt_token
+from app.api.auth import security, verify_access_token
 from app.services.resonnet_client import request_json
 from app.storage.database.postgres_client import get_db_session
 from app.storage.database.topic_store import (
@@ -301,7 +301,7 @@ async def _get_optional_user(
 ) -> dict | None:
     if not credentials:
         return None
-    return verify_jwt_token(credentials.credentials)
+    return verify_access_token(credentials.credentials)
 
 
 def _resolve_author_name(requested_author: str, user: dict | None) -> str:

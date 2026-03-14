@@ -4,6 +4,7 @@ import hashlib
 import os
 import random
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote
@@ -31,6 +32,7 @@ else:
     _dev_users: dict[str, dict] = {}
     _dev_codes: dict[str, dict] = {}
     _dev_twins: dict[int, dict[str, dict]] = {}
+    _dev_openclaw_keys: dict[int, dict] = {}
     _dev_user_counter = [0]
 
     def _get_dev_user(phone: str) -> Optional[dict]:
@@ -106,6 +108,15 @@ class TwinUpsertRequest(BaseModel):
     role_content: str | None = Field(default=None, description="分身角色详情内容")
 
 
+class OpenClawKeyResponse(BaseModel):
+    has_key: bool
+    key: str | None = None
+    masked_key: str | None = None
+    created_at: str | None = None
+    last_used_at: str | None = None
+    skill_path: str | None = None
+
+
 # Helper Functions
 def generate_code() -> str:
     return str(random.randint(100000, 999999))
@@ -152,11 +163,171 @@ def verify_jwt_token(token: str) -> Optional[dict]:
         return None
 
 
+def _hash_openclaw_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _mask_openclaw_key(raw_key: str) -> str:
+    if len(raw_key) <= 10:
+        return raw_key
+    return f"{raw_key[:8]}...{raw_key[-4:]}"
+
+
+def _build_openclaw_skill_path(raw_key: str) -> str:
+    return f"/api/v1/openclaw/skill.md?key={raw_key}"
+
+
+def generate_openclaw_key() -> str:
+    return f"tloc_{secrets.token_urlsafe(24).rstrip('=')}"
+
+
+def get_openclaw_key_record(user_id: int) -> dict | None:
+    if DATABASE_CONFIGURED:
+        with get_db_session() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT token_prefix, created_at, last_used_at
+                    FROM openclaw_api_keys
+                    WHERE user_id = :user_id
+                    """
+                ),
+                {"user_id": user_id},
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "masked_key": row[0],
+            "created_at": row[1].isoformat() if row[1] else None,
+            "last_used_at": row[2].isoformat() if row[2] else None,
+        }
+
+    record = _dev_openclaw_keys.get(user_id)
+    if not record:
+        return None
+    return {
+        "masked_key": record["token_prefix"],
+        "created_at": record["created_at"],
+        "last_used_at": record.get("last_used_at"),
+    }
+
+
+def create_or_rotate_openclaw_key(user_id: int) -> dict:
+    raw_key = generate_openclaw_key()
+    token_hash = _hash_openclaw_key(raw_key)
+    token_prefix = _mask_openclaw_key(raw_key)
+    now = datetime.now(timezone.utc)
+
+    if DATABASE_CONFIGURED:
+        with get_db_session() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO openclaw_api_keys (
+                        user_id, token_hash, token_prefix, created_at, updated_at, last_used_at
+                    ) VALUES (
+                        :user_id, :token_hash, :token_prefix, :created_at, :updated_at, NULL
+                    )
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET
+                        token_hash = EXCLUDED.token_hash,
+                        token_prefix = EXCLUDED.token_prefix,
+                        updated_at = EXCLUDED.updated_at,
+                        created_at = EXCLUDED.created_at,
+                        last_used_at = NULL
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "token_hash": token_hash,
+                    "token_prefix": token_prefix,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+    else:
+        _dev_openclaw_keys[user_id] = {
+            "token_hash": token_hash,
+            "token_prefix": token_prefix,
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+        }
+
+    return {
+        "has_key": True,
+        "key": raw_key,
+        "masked_key": token_prefix,
+        "created_at": now.isoformat(),
+        "last_used_at": None,
+        "skill_path": _build_openclaw_skill_path(raw_key),
+    }
+
+
+def verify_openclaw_api_key(token: str) -> Optional[dict]:
+    if not token.startswith("tloc_"):
+        return None
+    token_hash = _hash_openclaw_key(token)
+    now = datetime.now(timezone.utc)
+
+    if DATABASE_CONFIGURED:
+        with get_db_session() as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT u.id, u.phone, u.username
+                    FROM openclaw_api_keys k
+                    JOIN users u ON u.id = k.user_id
+                    WHERE k.token_hash = :token_hash
+                    """
+                ),
+                {"token_hash": token_hash},
+            ).fetchone()
+            if not row:
+                return None
+            session.execute(
+                text(
+                    """
+                    UPDATE openclaw_api_keys
+                    SET last_used_at = :last_used_at, updated_at = :updated_at
+                    WHERE token_hash = :token_hash
+                    """
+                ),
+                {"token_hash": token_hash, "last_used_at": now, "updated_at": now},
+            )
+        return {
+            "sub": str(row[0]),
+            "phone": row[1],
+            "username": row[2],
+            "auth_type": "openclaw_key",
+        }
+
+    for user in _dev_users.values():
+        user_id = int(user["id"])
+        record = _dev_openclaw_keys.get(user_id)
+        if record and record["token_hash"] == token_hash:
+            record["last_used_at"] = now.isoformat()
+            return {
+                "sub": str(user_id),
+                "phone": user["phone"],
+                "username": user.get("username"),
+                "auth_type": "openclaw_key",
+            }
+    return None
+
+
+def verify_access_token(token: str) -> Optional[dict]:
+    jwt_payload = verify_jwt_token(token)
+    if jwt_payload:
+        jwt_payload.setdefault("auth_type", "jwt")
+        return jwt_payload
+    return verify_openclaw_api_key(token)
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     """Get current user from JWT token."""
     if not credentials:
         raise HTTPException(status_code=401, detail="未登录")
-    payload = verify_jwt_token(credentials.credentials)
+    payload = verify_access_token(credentials.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="登录已过期")
     return payload
@@ -312,7 +483,29 @@ async def get_me(user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="用户不存在")
         user_data = {"id": u["id"], "phone": u["phone"], "username": u.get("username"), "created_at": u["created_at"]}
 
-    return {"user": user_data}
+    return {"user": user_data, "auth_type": user.get("auth_type", "jwt")}
+
+
+@router.get("/openclaw-key", response_model=OpenClawKeyResponse)
+async def get_openclaw_key(user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"])
+    record = get_openclaw_key_record(user_id)
+    if not record:
+        return OpenClawKeyResponse(has_key=False)
+    return OpenClawKeyResponse(
+        has_key=True,
+        masked_key=record.get("masked_key"),
+        created_at=record.get("created_at"),
+        last_used_at=record.get("last_used_at"),
+        skill_path=None,
+    )
+
+
+@router.post("/openclaw-key", response_model=OpenClawKeyResponse)
+async def create_openclaw_key(user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"])
+    record = create_or_rotate_openclaw_key(user_id)
+    return OpenClawKeyResponse(**record)
 
 
 @router.post("/digital-twins/upsert")

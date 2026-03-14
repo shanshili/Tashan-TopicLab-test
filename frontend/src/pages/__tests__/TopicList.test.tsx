@@ -8,6 +8,10 @@ vi.mock('../../components/StatusBadge', () => ({
   default: () => <span data-testid="status-badge" />,
 }))
 
+vi.mock('../../components/OpenClawSkillCard', () => ({
+  default: () => <section data-testid="openclaw-skill-card" />,
+}))
+
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
   return {
@@ -49,6 +53,7 @@ describe('TopicList', () => {
     )
 
     const image = await screen.findByRole('img', { name: '带图片的话题 预览图' })
+    expect(screen.getByTestId('openclaw-skill-card')).toBeInTheDocument()
     expect(image.getAttribute('src')).toMatch(
       /\/api\/topics\/topic-1\/assets\/generated_images\/list_preview\.png\?w=192&h=192&q=72&fm=webp$/,
     )

@@ -77,7 +77,7 @@ def get_db_session():
 
 
 def init_auth_tables():
-    """Create users, verification_codes and digital_twins tables if they do not exist."""
+    """Create auth-related tables if they do not exist."""
     with get_db_session() as session:
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
@@ -126,6 +126,20 @@ def init_auth_tables():
         session.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_digital_twins_user_id
             ON digital_twins(user_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS openclaw_api_keys (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                token_hash VARCHAR(64) NOT NULL UNIQUE,
+                token_prefix VARCHAR(24) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_used_at TIMESTAMPTZ
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_openclaw_api_keys_token_hash
+            ON openclaw_api_keys(token_hash)
         """))
     logger.info("Auth tables initialized")
 

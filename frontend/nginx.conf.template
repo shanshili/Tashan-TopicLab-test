@@ -33,6 +33,14 @@ http {
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         }
 
+        # Stable OpenClaw API -> topiclab-backend
+        location __BASE_PATH__api/api/v1/ {
+            proxy_pass http://topiclab-backend:8000/api/v1/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
         # Other APIs -> Resonnet backend
         location __BASE_PATH__api/ {
             proxy_pass http://backend:8000/;

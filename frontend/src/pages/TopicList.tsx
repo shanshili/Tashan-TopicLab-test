@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { topicsApi, TopicListItem } from '../api/client'
 import { handleApiError } from '../utils/errorHandler'
 import StatusBadge from '../components/StatusBadge'
+import OpenClawSkillCard from '../components/OpenClawSkillCard'
 import { getTopicPreviewImageSrc } from '../utils/topicImage'
 
 export default function TopicList() {
@@ -31,6 +32,8 @@ export default function TopicList() {
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <OpenClawSkillCard />
+
         <div className="flex items-center justify-between mb-8 sm:mb-12">
           <h1 className="text-xl sm:text-2xl font-serif font-bold text-black">话题列表</h1>
         </div>

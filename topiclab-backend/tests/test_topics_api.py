@@ -3,8 +3,10 @@ import importlib
 import time
 from pathlib import Path
 
+import bcrypt
 import pytest
 from PIL import Image
+from sqlalchemy import text
 
 
 @pytest.fixture
@@ -240,3 +242,127 @@ def test_discussion_generated_image_is_served_from_database_after_workspace_file
     assert preview.status_code == 200, preview.text
     assert preview.headers["content-type"] == "image/webp"
     assert preview.content
+
+
+def test_api_v1_topics_alias_and_home_payload(client, monkeypatch):
+    import app.api.openclaw as openclaw_module
+
+    async def fake_preview_source_feed_pipeline(limit: int = 20, select_count: int = 1):
+        return [
+            {
+                "article_id": 101,
+                "article_title": "Agent 研究进展",
+                "source_feed_name": "DeepTech",
+                "publish_time": "2026-03-14",
+                "url": "https://example.com/a",
+                "score": 11,
+                "topic_title": "AI Agent 的下一阶段协作边界",
+                "discussion_summary_markdown": "## 背景\n\n测试摘要",
+            }
+        ]
+
+    monkeypatch.setattr(openclaw_module, "preview_source_feed_pipeline", fake_preview_source_feed_pipeline)
+
+    create = client.post("/api/v1/topics", json={"title": "开放 API 讨论", "body": "验证 /api/v1 路径"})
+    assert create.status_code == 201, create.text
+    topic_id = create.json()["id"]
+
+    post = client.post(
+        f"/api/v1/topics/{topic_id}/posts",
+        json={"author": "alice", "body": "第一条来自 /api/v1 的帖子"},
+    )
+    assert post.status_code == 201, post.text
+    assert post.json()["body"] == "第一条来自 /api/v1 的帖子"
+
+    home = client.get("/api/v1/home")
+    assert home.status_code == 200, home.text
+    payload = home.json()
+    assert payload["latest_topics"][0]["id"] == topic_id
+    assert payload["source_feed_preview"]["list"][0]["article_id"] == 101
+    assert payload["quick_links"]["topics"] == "/api/v1/topics"
+    assert payload["what_to_do_next"]
+
+
+def test_api_v1_source_feed_preview_alias(client, monkeypatch):
+    import app.api.source_feed as source_feed_module
+
+    async def fake_preview_source_feed_pipeline(limit: int = 20, select_count: int = 1):
+        return [
+            {
+                "article_id": 202,
+                "article_title": "芯片与模型协同",
+                "source_feed_name": "新智元",
+                "publish_time": "2026-03-14",
+                "url": "https://example.com/chip",
+                "score": 9,
+                "topic_title": "模型能力是否会反向定义芯片形态",
+                "discussion_summary_markdown": "## 背景\n\n预览",
+            }
+        ]
+
+    monkeypatch.setattr(source_feed_module, "preview_source_feed_pipeline", fake_preview_source_feed_pipeline)
+
+    response = client.get("/api/v1/source-feed/automation/preview?limit=5&select_count=1")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["limit"] == 5
+    assert payload["select_count"] == 1
+    assert payload["list"][0]["article_id"] == 202
+
+
+def test_openclaw_key_can_bind_user_identity_and_render_personal_skill(client):
+    from app.storage.database.postgres_client import get_db_session
+
+    phone = f"138{int(time.time() * 1000) % 100000000:08d}"
+    hashed_password = bcrypt.hashpw("password123".encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    with get_db_session() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO users (phone, password, username)
+                VALUES (:phone, :password, :username)
+                """
+            ),
+            {
+                "phone": phone,
+                "password": hashed_password,
+                "username": "openclaw-user",
+            },
+        )
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"phone": phone, "password": "password123"},
+    )
+    assert login.status_code == 200, login.text
+    jwt_token = login.json()["token"]
+
+    key_resp = client.post(
+        "/api/v1/auth/openclaw-key",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+    assert key_resp.status_code == 200, key_resp.text
+    key_payload = key_resp.json()
+    raw_key = key_payload["key"]
+    assert raw_key.startswith("tloc_")
+    assert key_payload["skill_path"].endswith(raw_key)
+
+    skill_resp = client.get(f"/api/v1/openclaw/skill.md?key={raw_key}")
+    assert skill_resp.status_code == 200, skill_resp.text
+    assert "OpenClaw 绑定 Key" in skill_resp.text
+    assert raw_key in skill_resp.text
+
+    home_resp = client.get("/api/v1/home?include_source_preview=false", headers={"Authorization": f"Bearer {raw_key}"})
+    assert home_resp.status_code == 200, home_resp.text
+    assert home_resp.json()["your_account"]["authenticated"] is True
+    assert home_resp.json()["your_account"]["username"] == "openclaw-user"
+
+    topic = client.post("/api/v1/topics", json={"title": "绑定身份", "body": "验证发帖作者"}).json()
+    topic_id = topic["id"]
+    post_resp = client.post(
+        f"/api/v1/topics/{topic_id}/posts",
+        headers={"Authorization": f"Bearer {raw_key}"},
+        json={"author": "spoofed-author", "body": "这条帖子应该归属 openclaw-user"},
+    )
+    assert post_resp.status_code == 201, post_resp.text
+    assert post_resp.json()["author"] == "openclaw-user"

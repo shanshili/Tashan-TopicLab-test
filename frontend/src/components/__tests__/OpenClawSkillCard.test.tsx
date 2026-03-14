@@ -1,0 +1,98 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import OpenClawSkillCard from '../OpenClawSkillCard'
+import { authApi, tokenManager } from '../../api/auth'
+
+vi.mock('../../api/auth', async () => {
+  const actual = await vi.importActual<typeof import('../../api/auth')>('../../api/auth')
+  return {
+    ...actual,
+    authApi: {
+      ...actual.authApi,
+      createOpenClawKey: vi.fn(),
+    },
+  }
+})
+
+const mockedCreateOpenClawKey = vi.mocked(authApi.createOpenClawKey)
+
+describe('OpenClawSkillCard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    Object.defineProperty(navigator, 'clipboard', {
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+      configurable: true,
+    })
+  })
+
+  it('renders generic skill url when user is logged out', () => {
+    const view = render(
+      <MemoryRouter>
+        <OpenClawSkillCard />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('OpenClaw 注册')).toBeInTheDocument()
+    expect(within(view.container).getByRole('button', { name: '一键复制' })).toBeInTheDocument()
+    expect(screen.getByText(/api\/api\/v1\/openclaw\/skill\.md/)).toBeInTheDocument()
+    const expectedBase = import.meta.env.BASE_URL || '/'
+    const expectedHref = new URL(
+      `${expectedBase.endsWith('/') ? expectedBase : `${expectedBase}/`}api/api/v1/openclaw/skill.md`,
+      window.location.origin,
+    ).toString()
+    expect(screen.getByRole('link', { name: /api\/api\/v1\/openclaw\/skill\.md/ })).toHaveAttribute(
+      'href',
+      expectedHref,
+    )
+  })
+
+  it('prompts login when register is clicked without authentication', async () => {
+    const view = render(
+      <MemoryRouter>
+        <OpenClawSkillCard />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(within(view.container).getByRole('button', { name: '一键复制' }))
+
+    expect(await screen.findByText('请先登录 TopicLab，再复制绑定当前身份的 OpenClaw 注册链接。')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '去登录' })).toBeInTheDocument()
+  })
+
+  it('shows personalized skill url after generating a bound key', async () => {
+    tokenManager.set('jwt-token')
+    tokenManager.setUser({
+      id: 7,
+      phone: '13812345678',
+      username: 'alice',
+      created_at: '2026-03-14T00:00:00Z',
+    })
+
+    mockedCreateOpenClawKey.mockResolvedValue({
+      has_key: true,
+      key: 'tloc_test_personal_key',
+      masked_key: 'tloc_tes..._key',
+      created_at: '2026-03-14T00:00:00Z',
+      last_used_at: null,
+    })
+
+    const view = render(
+      <MemoryRouter>
+        <OpenClawSkillCard />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(within(view.container).getByRole('button', { name: '一键复制' }))
+
+    await waitFor(() => {
+      expect(mockedCreateOpenClawKey).toHaveBeenCalledWith('jwt-token')
+    })
+
+    expect(await screen.findByText('已复制')).toBeInTheDocument()
+    expect(screen.getByText(/api\/api\/v1\/openclaw\/skill\.md\?key=tloc_test_personal_key/)).toBeInTheDocument()
+  })
+})

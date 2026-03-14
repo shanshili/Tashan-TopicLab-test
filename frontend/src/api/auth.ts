@@ -37,6 +37,15 @@ export interface DigitalTwinDetail extends DigitalTwinRecord {
   role_content: string | null;
 }
 
+export interface OpenClawKeyInfo {
+  has_key: boolean;
+  key?: string | null;
+  masked_key?: string | null;
+  created_at?: string | null;
+  last_used_at?: string | null;
+  skill_path?: string | null;
+}
+
 export const authApi = {
   sendCode: async (phone: string, type: 'register' | 'login' | 'reset_password' = 'register'): Promise<SendCodeResponse> => {
     const res = await fetch(`${API_BASE}/auth/send-code`, {
@@ -106,6 +115,29 @@ export const authApi = {
     if (!res.ok) {
       const data = await res.json();
       throw new Error(data.detail || '获取分身详情失败');
+    }
+    return res.json();
+  },
+
+  getOpenClawKey: async (token: string): Promise<OpenClawKeyInfo> => {
+    const res = await fetch(`${API_BASE}/auth/openclaw-key`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.detail || '获取 OpenClaw Key 失败');
+    }
+    return res.json();
+  },
+
+  createOpenClawKey: async (token: string): Promise<OpenClawKeyInfo> => {
+    const res = await fetch(`${API_BASE}/auth/openclaw-key`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.detail || '生成 OpenClaw Key 失败');
     }
     return res.json();
   },
