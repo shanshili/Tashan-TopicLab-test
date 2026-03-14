@@ -4,12 +4,35 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Post } from '../api/client'
+import ReactionButton from './ReactionButton'
 import { resolveTopicImageSrc } from '../utils/topicImage'
+
+function HeartIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+      <path d="M10 16.25l-1.15-1.04C4.775 11.53 2.5 9.47 2.5 6.95A3.45 3.45 0 016 3.5c1.14 0 2.23.53 3 1.36A4.05 4.05 0 0112 3.5a3.45 3.45 0 013.5 3.45c0 2.52-2.27 4.58-6.35 8.27L10 16.25z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ShareIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+      <path d="M8 10.5l4-2.5m-4 1.5l4 2.5M13.5 6.5a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5zm0 10.5a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5zM5.5 12.25a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
 interface Props {
   posts: Post[]
   onReply?: (post: Post) => void
+  onDelete?: (post: Post) => void
+  onLike?: (post: Post) => void
+  onShare?: (post: Post) => void
   canReply?: boolean
+  canDelete?: (post: Post) => boolean
+  canLike?: boolean
+  pendingLikePostIds?: Set<string>
 }
 
 /** Build threaded structure: roots + children map. Render in chronological order with nesting. */
@@ -36,7 +59,13 @@ function renderThread(
   byId: Record<string, Post>,
   depth: number,
   onReply?: (post: Post) => void,
-  canReply?: boolean
+  onDelete?: (post: Post) => void,
+  onLike?: (post: Post) => void,
+  onShare?: (post: Post) => void,
+  canReply?: boolean,
+  canDelete?: (post: Post) => boolean,
+  canLike?: boolean,
+  pendingLikePostIds?: Set<string>,
 ): ReactNode[] {
   const nodes: ReactNode[] = []
   const children = childrenMap[post.id] || []
@@ -48,17 +77,33 @@ function renderThread(
       parent={post.in_reply_to_id ? byId[post.in_reply_to_id] : undefined}
       depth={depth}
       onReply={onReply}
+      onDelete={onDelete}
+      onLike={onLike}
+      onShare={onShare}
       canReply={canReply}
+      canDelete={canDelete}
+      canLike={canLike}
+      pendingLikePostIds={pendingLikePostIds}
     />
   )
 
   for (const child of children) {
-    nodes.push(...renderThread(child, childrenMap, byId, depth + 1, onReply, canReply))
+    nodes.push(...renderThread(child, childrenMap, byId, depth + 1, onReply, onDelete, onLike, onShare, canReply, canDelete, canLike, pendingLikePostIds))
   }
   return nodes
 }
 
-export default function PostThread({ posts, onReply, canReply = true }: Props) {
+export default function PostThread({
+  posts,
+  onReply,
+  onDelete,
+  onLike,
+  onShare,
+  canReply = true,
+  canDelete,
+  canLike = true,
+  pendingLikePostIds,
+}: Props) {
   if (posts.length === 0) {
     return <p className="text-gray-400 text-sm font-serif">暂无帖子</p>
   }
@@ -68,7 +113,7 @@ export default function PostThread({ posts, onReply, canReply = true }: Props) {
 
   const nodes: ReactNode[] = []
   for (const root of roots) {
-    nodes.push(...renderThread(root, childrenMap, byId, 0, onReply, canReply))
+    nodes.push(...renderThread(root, childrenMap, byId, 0, onReply, onDelete, onLike, onShare, canReply, canDelete, canLike, pendingLikePostIds))
   }
 
   return <div className="space-y-0">{nodes}</div>
@@ -79,13 +124,25 @@ function PostCard({
   parent,
   depth,
   onReply,
+  onDelete,
+  onLike,
+  onShare,
   canReply,
+  canDelete,
+  canLike,
+  pendingLikePostIds,
 }: {
   post: Post
   parent?: Post
   depth: number
   onReply?: (post: Post) => void
+  onDelete?: (post: Post) => void
+  onLike?: (post: Post) => void
+  onShare?: (post: Post) => void
   canReply?: boolean
+  canDelete?: (post: Post) => boolean
+  canLike?: boolean
+  pendingLikePostIds?: Set<string>
 }) {
   const isAgent = post.author_type === 'agent'
   const isPending = post.status === 'pending'
@@ -93,11 +150,17 @@ function PostCard({
   const displayName = isAgent ? (post.expert_label ?? post.author) : post.author
   const parentDisplayName = parent ? (parent.author_type === 'agent' ? (parent.expert_label ?? parent.author) : parent.author) : ''
   const isReply = depth > 0
-  const indentPx = Math.min(depth * 16, 64)
+  const indentPx = Math.min(depth * 12, 36)
   const initial = displayName.charAt(0).toUpperCase()
+  const showDelete = !isAgent && !isPending && !isFailed && !!onDelete && !!canDelete?.(post)
+  const likesCount = post.interaction?.likes_count ?? 0
+  const sharesCount = post.interaction?.shares_count ?? 0
+  const liked = post.interaction?.liked ?? false
+  const liking = pendingLikePostIds?.has(post.id) ?? false
 
   return (
     <div
+      id={`post-${post.id}`}
       className={`group relative ${isPending ? 'opacity-60' : ''} ${
         isReply ? 'pl-3 ml-3 border-l border-gray-200' : 'border-b border-gray-100'
       }`}
@@ -113,7 +176,7 @@ function PostCard({
         )}
 
         {/* Header */}
-        <div className="flex items-center gap-2 mb-1">
+        <div className="mb-1 flex items-start gap-2">
           <div
             className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-medium flex-shrink-0 ${
               isAgent ? 'bg-black text-white' : 'bg-gray-200 text-gray-600'
@@ -135,16 +198,28 @@ function PostCard({
               })}
             </span>
           </div>
-          {canReply && onReply && (
-            <button
-              type="button"
-              onClick={() => onReply(post)}
-              className="text-xs text-gray-400 hover:text-black px-2 py-1.5 -mr-2 rounded touch-manipulation min-h-[44px] min-w-[44px] flex items-center justify-center"
-              aria-label={`回复 ${displayName}`}
-            >
-              回复
-            </button>
-          )}
+          <div className="flex shrink-0 items-center">
+            {showDelete ? (
+              <button
+                type="button"
+                onClick={() => onDelete(post)}
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded px-2 py-1.5 text-xs text-gray-400 touch-manipulation hover:text-red-600"
+                aria-label={`删除 ${displayName} 的帖子`}
+              >
+                删除
+              </button>
+            ) : null}
+            {canReply && onReply && (
+              <button
+                type="button"
+                onClick={() => onReply(post)}
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded px-2 py-1.5 text-xs text-gray-400 touch-manipulation hover:text-black"
+                aria-label={`回复 ${displayName}`}
+              >
+                回复
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Body */}
@@ -175,6 +250,33 @@ function PostCard({
             </ReactMarkdown>
           )}
         </div>
+
+        {!isPending && !isFailed && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 pl-6 sm:pl-8">
+            {onLike && canLike ? (
+              <ReactionButton
+                label="点赞"
+                count={likesCount}
+                active={liked}
+                pending={liking}
+                icon={<HeartIcon />}
+                subtle
+                onClick={() => onLike(post)}
+              />
+            ) : (
+              <span>点赞 {likesCount}</span>
+            )}
+            {onShare && (
+              <ReactionButton
+                label="分享"
+                count={sharesCount}
+                icon={<ShareIcon />}
+                subtle
+                onClick={() => onShare(post)}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

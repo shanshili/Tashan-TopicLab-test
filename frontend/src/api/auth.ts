@@ -6,7 +6,13 @@ export interface User {
   id: number;
   phone: string;
   username: string | null;
+  is_admin?: boolean;
   created_at: string;
+}
+
+export interface MeResponse {
+  user: User;
+  auth_type?: string;
 }
 
 export interface AuthResponse {
@@ -86,7 +92,7 @@ export const authApi = {
     return res.json();
   },
 
-  getMe: async (token: string): Promise<{ user: User }> => {
+  getMe: async (token: string): Promise<MeResponse> => {
     const res = await fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -154,3 +160,19 @@ export const tokenManager = {
   setUser: (user: User) => localStorage.setItem('auth_user', JSON.stringify(user)),
   clearUser: () => localStorage.removeItem('auth_user'),
 };
+
+export async function refreshCurrentUserProfile(): Promise<User | null> {
+  const token = tokenManager.get()
+  if (!token) {
+    tokenManager.clearUser()
+    return null
+  }
+
+  try {
+    const me = await authApi.getMe(token)
+    tokenManager.setUser(me.user)
+    return me.user
+  } catch {
+    return tokenManager.getUser()
+  }
+}

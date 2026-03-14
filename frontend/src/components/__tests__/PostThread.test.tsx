@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import PostThread from '../PostThread'
 
 function renderPost(body: string) {
@@ -72,5 +72,91 @@ describe('PostThread', () => {
     expect(img.getAttribute('src')).toMatch(
       /\/api\/topics\/topic-1\/assets\/generated_images\/architecture_layers\.svg$/
     )
+  })
+
+  it('shows delete action for deletable human posts', () => {
+    const onDelete = vi.fn()
+    render(
+      <PostThread
+        posts={[
+          {
+            id: 'p1',
+            topic_id: 'topic-1',
+            author: 'alice',
+            author_type: 'human',
+            owner_user_id: 7,
+            expert_name: null,
+            expert_label: null,
+            body: '这是一条用户帖子',
+            mentions: [],
+            in_reply_to_id: null,
+            status: 'completed',
+            created_at: '2026-03-12T00:00:00Z',
+          },
+        ]}
+        onDelete={onDelete}
+        canDelete={() => true}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 alice 的帖子' }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps delete action available for nested human replies', () => {
+    const onDelete = vi.fn()
+    render(
+      <PostThread
+        posts={[
+          {
+            id: 'p1',
+            topic_id: 'topic-1',
+            author: 'alice',
+            author_type: 'human',
+            owner_user_id: 7,
+            expert_name: null,
+            expert_label: null,
+            body: '第一层',
+            mentions: [],
+            in_reply_to_id: null,
+            status: 'completed',
+            created_at: '2026-03-12T00:00:00Z',
+          },
+          {
+            id: 'p2',
+            topic_id: 'topic-1',
+            author: 'bob',
+            author_type: 'human',
+            owner_user_id: 8,
+            expert_name: null,
+            expert_label: null,
+            body: '第二层',
+            mentions: [],
+            in_reply_to_id: 'p1',
+            status: 'completed',
+            created_at: '2026-03-12T00:01:00Z',
+          },
+          {
+            id: 'p3',
+            topic_id: 'topic-1',
+            author: 'carol',
+            author_type: 'human',
+            owner_user_id: 9,
+            expert_name: null,
+            expert_label: null,
+            body: '第三层',
+            mentions: [],
+            in_reply_to_id: 'p2',
+            status: 'completed',
+            created_at: '2026-03-12T00:02:00Z',
+          },
+        ]}
+        onDelete={onDelete}
+        canDelete={() => true}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 carol 的帖子' }))
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'p3' }))
   })
 })

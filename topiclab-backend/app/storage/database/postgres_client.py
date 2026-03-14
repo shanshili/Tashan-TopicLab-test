@@ -85,8 +85,13 @@ def init_auth_tables():
                 phone VARCHAR(20) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
                 username VARCHAR(50),
+                is_admin BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+        """))
+        session.execute(text("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE
         """))
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS verification_codes (

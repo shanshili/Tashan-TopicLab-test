@@ -20,8 +20,10 @@ import TopicConfigTabs from '../components/TopicConfigTabs'
 import ResizableToc from '../components/ResizableToc'
 import PostThread from '../components/PostThread'
 import MentionTextarea from '../components/MentionTextarea'
-import { postAdminTokenManager, tokenManager, User } from '../api/auth'
+import ReactionButton from '../components/ReactionButton'
+import { refreshCurrentUserProfile, tokenManager, User } from '../api/auth'
 import { handleApiError, handleApiSuccess } from '../utils/errorHandler'
+import { toast } from '../utils/toast'
 import { resolveTopicImageSrc } from '../utils/topicImage'
 
 interface DiscussionPost {
@@ -37,6 +39,30 @@ interface NavigationItem {
   round?: number
   label: string
   id: string
+}
+
+function HeartIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+      <path d="M10 16.25l-1.15-1.04C4.775 11.53 2.5 9.47 2.5 6.95A3.45 3.45 0 016 3.5c1.14 0 2.23.53 3 1.36A4.05 4.05 0 0112 3.5a3.45 3.45 0 013.5 3.45c0 2.52-2.27 4.58-6.35 8.27L10 16.25z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function BookmarkIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+      <path d="M6 3.75h8a1 1 0 011 1v11l-5-2.6-5 2.6v-11a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ShareIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
+      <path d="M8 10.5l4-2.5m-4 1.5l4 2.5M13.5 6.5a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5zm0 10.5a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5zM5.5 12.25a1.75 1.75 0 100-3.5 1.75 1.75 0 000 3.5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 const POLL_INTERVAL_MS = 2000
@@ -60,7 +86,9 @@ export default function TopicDetail() {
   const [activeNavId, setActiveNavId] = useState<string>('')
   const [replyingTo, setReplyingTo] = useState<Post | null>(null)
   const [currentUser, setCurrentUser] = useState<User | null>(null)
-  const [postAdminToken, setPostAdminToken] = useState<string | null>(postAdminTokenManager.get())
+  const [topicLikePending, setTopicLikePending] = useState(false)
+  const [topicFavoritePending, setTopicFavoritePending] = useState(false)
+  const [postLikePendingIds, setPostLikePendingIds] = useState<Set<string>>(new Set())
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingRepliesRef = useRef<Set<string>>(new Set())
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
@@ -124,19 +152,27 @@ export default function TopicDetail() {
   }, [id])
 
   useEffect(() => {
-    const syncUser = () => {
+    const syncUser = async () => {
       const token = tokenManager.get()
+      if (token) {
+        const latestUser = await refreshCurrentUserProfile()
+        if (latestUser) {
+          setCurrentUser(latestUser)
+          return
+        }
+      }
       const savedUser = tokenManager.getUser()
       setCurrentUser(token && savedUser ? savedUser : null)
-      setPostAdminToken(postAdminTokenManager.get())
     }
 
-    syncUser()
-    window.addEventListener('storage', syncUser)
-    window.addEventListener('auth-change', syncUser)
+    void syncUser()
+    const handleStorage = () => { void syncUser() }
+    const handleAuthChange = () => { void syncUser() }
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('auth-change', handleAuthChange)
     return () => {
-      window.removeEventListener('storage', syncUser)
-      window.removeEventListener('auth-change', syncUser)
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('auth-change', handleAuthChange)
     }
   }, [])
 
@@ -180,7 +216,7 @@ export default function TopicDetail() {
     const confirmed = window.confirm('确认删除这条帖子？')
     if (!confirmed) return
     try {
-      await postsApi.delete(id, post.id, postAdminToken ?? undefined)
+      await postsApi.delete(id, post.id)
       await loadPosts(id)
       if (replyingTo?.id === post.id) {
         setReplyingTo(null)
@@ -189,6 +225,92 @@ export default function TopicDetail() {
     } catch (err) {
       handleApiError(err, '删除帖子失败')
     }
+  }
+
+  const requireCurrentUser = () => {
+    if (currentUser) return true
+    toast.error('请先登录后再操作')
+    return false
+  }
+
+  const handleToggleTopicLike = async () => {
+    if (!id || !topic || !requireCurrentUser()) return
+    const nextEnabled = !(topic.interaction?.liked ?? false)
+    setTopicLikePending(true)
+    try {
+      const res = await topicsApi.like(id, nextEnabled)
+      setTopic(prev => (prev ? { ...prev, interaction: res.data } : prev))
+    } catch (err) {
+      handleApiError(err, nextEnabled ? '点赞失败' : '取消点赞失败')
+    } finally {
+      setTopicLikePending(false)
+    }
+  }
+
+  const handleToggleTopicFavorite = async () => {
+    if (!id || !topic || !requireCurrentUser()) return
+    const nextEnabled = !(topic.interaction?.favorited ?? false)
+    setTopicFavoritePending(true)
+    try {
+      const res = await topicsApi.favorite(id, nextEnabled)
+      setTopic(prev => (prev ? { ...prev, interaction: res.data } : prev))
+    } catch (err) {
+      handleApiError(err, nextEnabled ? '收藏失败' : '取消收藏失败')
+    } finally {
+      setTopicFavoritePending(false)
+    }
+  }
+
+  const copyLink = async (url: string, successMessage: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      handleApiSuccess(successMessage)
+      toast.success(successMessage)
+    } catch {
+      toast.error('复制链接失败')
+    }
+  }
+
+  const handleShareTopic = async () => {
+    if (!id) return
+    const url = new URL(`${import.meta.env.BASE_URL}topics/${id}`, window.location.origin).toString()
+    try {
+      const res = await topicsApi.share(id)
+      setTopic(prev => (prev ? { ...prev, interaction: res.data } : prev))
+    } catch (err) {
+      handleApiError(err, '记录分享失败')
+    }
+    await copyLink(url, '话题链接已复制')
+  }
+
+  const handleLikePost = async (post: Post) => {
+    if (!id || !requireCurrentUser()) return
+    const nextEnabled = !(post.interaction?.liked ?? false)
+    setPostLikePendingIds(prev => new Set(prev).add(post.id))
+    try {
+      const res = await postsApi.like(id, post.id, nextEnabled)
+      setPosts(prev => prev.map(item => item.id === post.id ? { ...item, interaction: res.data } : item))
+    } catch (err) {
+      handleApiError(err, nextEnabled ? '帖子点赞失败' : '取消帖子点赞失败')
+    } finally {
+      setPostLikePendingIds(prev => {
+        const next = new Set(prev)
+        next.delete(post.id)
+        return next
+      })
+    }
+  }
+
+  const handleSharePost = async (post: Post) => {
+    if (!id) return
+    const url = new URL(`${import.meta.env.BASE_URL}topics/${id}#post-${post.id}`, window.location.origin).toString()
+    try {
+      const res = await postsApi.share(id, post.id)
+      setPosts(prev => prev.map(item => item.id === post.id ? { ...item, interaction: res.data } : item))
+    } catch (err) {
+      handleApiError(err, '记录帖子分享失败')
+    }
+    await copyLink(url, '帖子链接已复制')
   }
 
   const handleSubmitPost = async (e: React.FormEvent) => {
@@ -402,7 +524,7 @@ export default function TopicDetail() {
     ? `发起人 ${topic.creator_name}${topic.creator_auth_type === 'openclaw_key' ? ' · OpenClaw' : ''}`
     : null
   const canDeletePost = (post: Post) => {
-    if (postAdminToken) {
+    if (currentUser?.is_admin) {
       return true
     }
     if (!currentUser || post.author_type !== 'human') {
@@ -413,6 +535,11 @@ export default function TopicDetail() {
     }
     return post.author === currentUserName
   }
+  const topicLikes = topic.interaction?.likes_count ?? 0
+  const topicShares = topic.interaction?.shares_count ?? 0
+  const topicFavorites = topic.interaction?.favorites_count ?? 0
+  const topicLiked = topic.interaction?.liked ?? false
+  const topicFavorited = topic.interaction?.favorited ?? false
 
   return (
     <div className="bg-white min-h-screen">
@@ -429,6 +556,30 @@ export default function TopicDetail() {
               {creatorMeta ? <span>{creatorMeta}</span> : null}
               {topic.discussion_status !== 'pending' ? <span>AI 话题讨论</span> : null}
               {topic.status === 'closed' ? <span>已关闭</span> : null}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+              <ReactionButton
+                label="点赞"
+                count={topicLikes}
+                active={topicLiked}
+                pending={topicLikePending}
+                icon={<HeartIcon />}
+                onClick={handleToggleTopicLike}
+              />
+              <ReactionButton
+                label="收藏"
+                count={topicFavorites}
+                active={topicFavorited}
+                pending={topicFavoritePending}
+                icon={<BookmarkIcon />}
+                onClick={handleToggleTopicFavorite}
+              />
+              <ReactionButton
+                label="分享"
+                count={topicShares}
+                icon={<ShareIcon />}
+                onClick={handleShareTopic}
+              />
             </div>
           </div>
 
@@ -598,8 +749,12 @@ export default function TopicDetail() {
               posts={posts}
               onReply={handleReplyToPost}
               onDelete={handleDeletePost}
+              onLike={handleLikePost}
+              onShare={handleSharePost}
               canReply={topic.status === 'open'}
               canDelete={canDeletePost}
+              canLike
+              pendingLikePostIds={postLikePendingIds}
             />
 
             {topic.status === 'open' ? (

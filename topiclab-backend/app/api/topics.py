@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -35,6 +34,10 @@ from app.storage.database.topic_store import (
     get_topic,
     get_topic_moderator_config,
     hash_post_delete_token,
+    list_user_favorite_source_articles,
+    list_user_favorite_topics,
+    record_post_share,
+    record_topic_share,
     list_discussion_turns,
     list_posts,
     list_topic_experts,
@@ -45,6 +48,9 @@ from app.storage.database.topic_store import (
     replace_topic_experts,
     resolve_post_by_delete_token,
     set_discussion_status,
+    set_post_user_action,
+    set_source_article_user_action,
+    set_topic_user_action,
     set_topic_moderator_config,
     update_topic,
     upsert_post,
@@ -57,9 +63,6 @@ _PREVIEW_DEFAULT_QUALITY = 72
 _PREVIEW_DEFAULT_FORMAT = "webp"
 _PREVIEW_MAX_DIMENSION = 2048
 _DISCUSSION_SYNC_INTERVAL_SECONDS = 2.0
-_POST_ADMIN_TOKEN = os.getenv(
-    "POST_TOKEN_KEY"
-)
 
 TOPIC_CATEGORIES = [
     {"id": "plaza", "name": "广场", "description": "适合公开发起、泛讨论和社区互动的话题。", "profile_id": "community_dialogue"},
@@ -258,6 +261,21 @@ class StartDiscussionRequest(BaseModel):
     allowed_tools: list[str] | None = None
     skill_list: list[str] | None = Field(default=None)
     mcp_server_ids: list[str] | None = None
+
+
+class ToggleActionRequest(BaseModel):
+    enabled: bool = True
+
+
+class SourceArticleActionRequest(ToggleActionRequest):
+    title: str = ""
+    source_feed_name: str = ""
+    source_type: str = ""
+    url: str = ""
+    pic_url: str | None = None
+    description: str = ""
+    publish_time: str = ""
+    created_at: str = ""
 
 
 def get_workspace_base() -> Path:
@@ -524,6 +542,45 @@ def _resolve_owner_identity(user: dict | None) -> tuple[int | None, str | None]:
     return int(raw_user_id), user.get("auth_type", "jwt")
 
 
+def _require_owner_identity(user: dict | None) -> tuple[int, str]:
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    user_id, auth_type = _resolve_owner_identity(user)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="无效账号")
+    return user_id, auth_type or "jwt"
+
+
+def _is_admin_user(user: dict | None) -> bool:
+    return bool(user and user.get("is_admin"))
+
+
+def _can_delete_topic(topic: dict, user: dict | None) -> bool:
+    if not user:
+        return False
+    if _is_admin_user(user):
+        return True
+    current_user_id = user.get("sub")
+    creator_user_id = topic.get("creator_user_id")
+    if current_user_id is not None and creator_user_id is not None:
+        return int(current_user_id) == int(creator_user_id)
+    return False
+
+
+def _can_delete_post(post: dict, user: dict | None) -> bool:
+    if not user:
+        return False
+    if _is_admin_user(user):
+        return True
+    if post.get("author_type") != "human":
+        return False
+    current_user_id = user.get("sub")
+    if current_user_id is not None and post.get("owner_user_id") is not None:
+        return int(current_user_id) == int(post["owner_user_id"])
+    author_name = _resolve_author_name(post.get("author") or "", user)
+    return author_name == post.get("author")
+
+
 def _normalize_topic_category(category: str | None) -> str | None:
     if category is None:
         return None
@@ -714,8 +771,9 @@ async def _run_expert_reply_background(topic_id: str, reply_post_id: str, payloa
 
 
 @router.get("/topics")
-def get_topics(category: str | None = Query(default=None)):
-    return list_topics(category=_normalize_topic_category(category))
+def get_topics(category: str | None = Query(default=None), user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _resolve_owner_identity(user)
+    return list_topics(category=_normalize_topic_category(category), user_id=user_id, auth_type=auth_type)
 
 
 @router.get("/topics/categories")
@@ -751,8 +809,9 @@ async def create_topic_endpoint(data: TopicCreateRequest, user: dict | None = De
 
 
 @router.get("/topics/{topic_id}")
-def get_topic_endpoint(topic_id: str):
-    topic = get_topic(topic_id)
+def get_topic_endpoint(topic_id: str, user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _resolve_owner_identity(user)
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
     return topic
@@ -778,20 +837,71 @@ def close_topic_endpoint(topic_id: str):
 
 
 @router.delete("/topics/{topic_id}")
-def delete_topic_endpoint(topic_id: str, token: str | None = Query(default=None)):
-    if not token or token != _POST_ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
+def delete_topic_endpoint(topic_id: str, user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _resolve_owner_identity(user)
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    if not _can_delete_topic(topic, user):
+        raise HTTPException(status_code=403, detail="No permission to delete this topic")
     if not delete_topic(topic_id):
         raise HTTPException(status_code=404, detail="Topic not found")
     return {"ok": True, "topic_id": topic_id}
 
 
+@router.post("/topics/{topic_id}/like")
+def like_topic_endpoint(
+    topic_id: str,
+    req: ToggleActionRequest,
+    user: dict | None = Depends(_get_optional_user),
+):
+    if not get_topic(topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    user_id, auth_type = _require_owner_identity(user)
+    return set_topic_user_action(topic_id, user_id=user_id, auth_type=auth_type, liked=req.enabled)
+
+
+@router.post("/topics/{topic_id}/favorite")
+def favorite_topic_endpoint(
+    topic_id: str,
+    req: ToggleActionRequest,
+    user: dict | None = Depends(_get_optional_user),
+):
+    if not get_topic(topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    user_id, auth_type = _require_owner_identity(user)
+    return set_topic_user_action(topic_id, user_id=user_id, auth_type=auth_type, favorited=req.enabled)
+
+
+@router.post("/topics/{topic_id}/share")
+def share_topic_endpoint(
+    topic_id: str,
+    user: dict | None = Depends(_get_optional_user),
+):
+    if not get_topic(topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    user_id, auth_type = _resolve_owner_identity(user)
+    return record_topic_share(topic_id, user_id=user_id, auth_type=auth_type)
+
+
+@router.get("/me/favorites")
+def get_my_favorites_endpoint(user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _require_owner_identity(user)
+    return {
+        "topics": list_user_favorite_topics(user_id=user_id, auth_type=auth_type),
+        "source_articles": list_user_favorite_source_articles(user_id=user_id, auth_type=auth_type),
+    }
+
+
 @router.get("/topics/{topic_id}/posts")
-def list_posts_endpoint(topic_id: str):
-    topic = get_topic(topic_id)
+def list_posts_endpoint(topic_id: str, user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _resolve_owner_identity(user)
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    return list_posts(topic_id)
+    return list_posts(topic_id, user_id=user_id, auth_type=auth_type)
 
 
 @router.post("/topics/{topic_id}/posts", status_code=201)
@@ -884,21 +994,50 @@ async def mention_expert_endpoint(
 
 
 @router.get("/topics/{topic_id}/posts/mention/{reply_post_id}")
-def get_reply_status_endpoint(topic_id: str, reply_post_id: str):
-    topic = get_topic(topic_id)
+def get_reply_status_endpoint(topic_id: str, reply_post_id: str, user: dict | None = Depends(_get_optional_user)):
+    user_id, auth_type = _resolve_owner_identity(user)
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    post = get_post(topic_id, reply_post_id)
+    post = get_post(topic_id, reply_post_id, user_id=user_id, auth_type=auth_type)
     if not post:
         raise HTTPException(status_code=404, detail="Reply post not found")
     return post
+
+
+@router.post("/topics/{topic_id}/posts/{post_id}/like")
+def like_post_endpoint(
+    topic_id: str,
+    post_id: str,
+    req: ToggleActionRequest,
+    user: dict | None = Depends(_get_optional_user),
+):
+    if not get_topic(topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if not get_post(topic_id, post_id):
+        raise HTTPException(status_code=404, detail="Post not found")
+    user_id, auth_type = _require_owner_identity(user)
+    return set_post_user_action(topic_id, post_id, user_id=user_id, auth_type=auth_type, liked=req.enabled)
+
+
+@router.post("/topics/{topic_id}/posts/{post_id}/share")
+def share_post_endpoint(
+    topic_id: str,
+    post_id: str,
+    user: dict | None = Depends(_get_optional_user),
+):
+    if not get_topic(topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if not get_post(topic_id, post_id):
+        raise HTTPException(status_code=404, detail="Post not found")
+    user_id, auth_type = _resolve_owner_identity(user)
+    return record_post_share(topic_id, post_id, user_id=user_id, auth_type=auth_type)
 
 
 @router.delete("/topics/{topic_id}/posts/{post_id}")
 def delete_post_endpoint(
     topic_id: str,
     post_id: str,
-    token: str | None = Query(default=None),
     user: dict | None = Depends(_get_optional_user),
 ):
     topic = get_topic(topic_id)
@@ -908,28 +1047,16 @@ def delete_post_endpoint(
     post = get_post(topic_id, post_id)
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-    if token and token == _POST_ADMIN_TOKEN:
-        if not delete_post(topic_id, post_id):
-            raise HTTPException(status_code=404, detail="Post not found")
-        return {"ok": True, "topic_id": topic_id, "post_id": post_id}
 
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
-    if post.get("author_type") != "human":
-        raise HTTPException(status_code=403, detail="Only human posts can be deleted")
+    if not _can_delete_post(post, user):
+        raise HTTPException(status_code=403, detail="No permission to delete this post")
 
-    current_user_id = user.get("sub")
-    if current_user_id is not None and post.get("owner_user_id") is not None:
-        if int(current_user_id) != int(post["owner_user_id"]):
-            raise HTTPException(status_code=403, detail="No permission to delete this post")
-    else:
-        author_name = _resolve_author_name(post.get("author") or "", user)
-        if author_name != post.get("author"):
-            raise HTTPException(status_code=403, detail="No permission to delete this post")
-
-    if not delete_post(topic_id, post_id):
+    deleted_count = delete_post(topic_id, post_id)
+    if deleted_count <= 0:
         raise HTTPException(status_code=404, detail="Post not found")
-    return {"ok": True, "topic_id": topic_id, "post_id": post_id}
+    return {"ok": True, "topic_id": topic_id, "post_id": post_id, "deleted_count": deleted_count}
 
 
 @router.post("/topics/{topic_id}/discussion", status_code=202)

@@ -40,6 +40,7 @@ export interface Topic {
   creator_user_id?: number | null
   creator_name?: string | null
   creator_auth_type?: string | null
+  interaction?: TopicInteraction
 }
 
 export interface TopicCategory {
@@ -77,6 +78,15 @@ export interface TopicListItem {
   creator_user_id?: number | null
   creator_name?: string | null
   creator_auth_type?: string | null
+  interaction?: TopicInteraction
+}
+
+export interface TopicInteraction {
+  likes_count: number
+  shares_count: number
+  favorites_count: number
+  liked: boolean
+  favorited: boolean
 }
 
 export interface SourceFeedArticle {
@@ -89,6 +99,15 @@ export interface SourceFeedArticle {
   description: string
   publish_time: string
   created_at: string
+  interaction?: SourceArticleInteraction
+}
+
+export interface SourceArticleInteraction {
+  likes_count: number
+  shares_count: number
+  favorites_count: number
+  liked: boolean
+  favorited: boolean
 }
 
 export interface SourceFeedListResponse {
@@ -110,6 +129,9 @@ export interface Post {
   topic_id: string
   author: string
   author_type: 'human' | 'agent'
+  delete_token?: string | null
+  owner_user_id?: number | null
+  owner_auth_type?: string | null
   expert_name: string | null
   expert_label: string | null
   body: string
@@ -117,6 +139,13 @@ export interface Post {
   in_reply_to_id: string | null
   status: 'pending' | 'completed' | 'failed'
   created_at: string
+  interaction?: PostInteraction
+}
+
+export interface PostInteraction {
+  likes_count: number
+  shares_count: number
+  liked: boolean
 }
 
 export interface CreatePostRequest {
@@ -136,6 +165,26 @@ export interface MentionExpertResponse {
   user_post: Post
   reply_post_id: string
   status: 'pending'
+}
+
+export interface ToggleActionRequest {
+  enabled: boolean
+}
+
+export interface SourceArticleActionRequest extends ToggleActionRequest {
+  title: string
+  source_feed_name: string
+  source_type: string
+  url: string
+  pic_url?: string | null
+  description: string
+  publish_time: string
+  created_at: string
+}
+
+export interface MyFavoritesResponse {
+  topics: TopicListItem[]
+  source_articles: SourceFeedArticle[]
 }
 
 export interface CreateTopicRequest {
@@ -215,7 +264,12 @@ export const topicsApi = {
   create: (data: CreateTopicRequest) => api.post<Topic>('/topics', data),
   update: (id: string, data: Partial<CreateTopicRequest>) => api.patch<Topic>(`/topics/${id}`, data),
   close: (id: string) => api.post<Topic>(`/topics/${id}/close`),
+  delete: (id: string) => api.delete<{ ok: boolean; topic_id: string }>(`/topics/${id}`),
   listCategories: () => api.get<{ list: TopicCategory[] }>('/topics/categories'),
+  like: (id: string, enabled: boolean) => api.post<TopicInteraction>(`/topics/${id}/like`, { enabled }),
+  favorite: (id: string, enabled: boolean) => api.post<TopicInteraction>(`/topics/${id}/favorite`, { enabled }),
+  share: (id: string) => api.post<TopicInteraction>(`/topics/${id}/share`),
+  getFavorites: () => api.get<MyFavoritesResponse>('/me/favorites'),
 }
 
 export const sourceFeedApi = {
@@ -231,6 +285,12 @@ export const sourceFeedApi = {
     searchParams.set('url', rawUrl)
     return `${import.meta.env.BASE_URL}api/source-feed/image?${searchParams.toString()}`
   },
+  like: (articleId: number, data: SourceArticleActionRequest) =>
+    api.post<SourceArticleInteraction>(`/source-feed/articles/${articleId}/like`, data),
+  favorite: (articleId: number, data: SourceArticleActionRequest) =>
+    api.post<SourceArticleInteraction>(`/source-feed/articles/${articleId}/favorite`, data),
+  share: (articleId: number) =>
+    api.post<SourceArticleInteraction>(`/source-feed/articles/${articleId}/share`),
 }
 
 export const postsApi = {
@@ -241,6 +301,12 @@ export const postsApi = {
     api.post<MentionExpertResponse>(`/topics/${topicId}/posts/mention`, data),
   getReplyStatus: (topicId: string, replyPostId: string) =>
     api.get<Post>(`/topics/${topicId}/posts/mention/${replyPostId}`),
+  delete: (topicId: string, postId: string) =>
+    api.delete<{ ok: boolean; topic_id: string; post_id: string; deleted_count?: number }>(`/topics/${topicId}/posts/${postId}`),
+  like: (topicId: string, postId: string, enabled: boolean) =>
+    api.post<PostInteraction>(`/topics/${topicId}/posts/${postId}/like`, { enabled }),
+  share: (topicId: string, postId: string) =>
+    api.post<PostInteraction>(`/topics/${topicId}/posts/${postId}/share`),
 }
 
 export const discussionApi = {

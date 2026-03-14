@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import secrets
+from hashlib import sha256
 import uuid
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.storage.database.postgres_client import get_db_session
 
@@ -121,6 +123,9 @@ def init_topic_tables() -> None:
                 topic_id VARCHAR(36) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
                 author VARCHAR(255) NOT NULL,
                 author_type VARCHAR(32) NOT NULL,
+                owner_user_id INTEGER,
+                owner_auth_type VARCHAR(64),
+                delete_token_hash VARCHAR(64),
                 expert_name VARCHAR(255),
                 expert_label VARCHAR(255),
                 body TEXT NOT NULL DEFAULT '',
@@ -130,6 +135,9 @@ def init_topic_tables() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        session.execute(text("ALTER TABLE posts ADD COLUMN IF NOT EXISTS owner_user_id INTEGER"))
+        session.execute(text("ALTER TABLE posts ADD COLUMN IF NOT EXISTS owner_auth_type VARCHAR(64)"))
+        session.execute(text("ALTER TABLE posts ADD COLUMN IF NOT EXISTS delete_token_hash VARCHAR(64)"))
         session.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_posts_topic_created
             ON posts(topic_id, created_at)
@@ -198,6 +206,102 @@ def init_topic_tables() -> None:
         session.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_topic_generated_images_topic
             ON topic_generated_images(topic_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS topic_user_actions (
+                topic_id VARCHAR(36) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL,
+                auth_type VARCHAR(64) NOT NULL DEFAULT 'jwt',
+                liked BOOLEAN NOT NULL DEFAULT FALSE,
+                favorited BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (topic_id, user_id, auth_type)
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_topic_user_actions_topic
+            ON topic_user_actions(topic_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS post_user_actions (
+                post_id VARCHAR(36) NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                topic_id VARCHAR(36) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL,
+                auth_type VARCHAR(64) NOT NULL DEFAULT 'jwt',
+                liked BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (post_id, user_id, auth_type)
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_post_user_actions_topic
+            ON post_user_actions(topic_id, post_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS source_article_user_actions (
+                article_id BIGINT NOT NULL,
+                user_id INTEGER NOT NULL,
+                auth_type VARCHAR(64) NOT NULL DEFAULT 'jwt',
+                liked BOOLEAN NOT NULL DEFAULT FALSE,
+                favorited BOOLEAN NOT NULL DEFAULT FALSE,
+                snapshot_title TEXT NOT NULL DEFAULT '',
+                snapshot_source_feed_name TEXT NOT NULL DEFAULT '',
+                snapshot_source_type TEXT NOT NULL DEFAULT '',
+                snapshot_url TEXT NOT NULL DEFAULT '',
+                snapshot_pic_url TEXT,
+                snapshot_description TEXT NOT NULL DEFAULT '',
+                snapshot_publish_time TEXT NOT NULL DEFAULT '',
+                snapshot_created_at TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (article_id, user_id, auth_type)
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_source_article_user_actions_article
+            ON source_article_user_actions(article_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS topic_share_events (
+                id VARCHAR(36) PRIMARY KEY,
+                topic_id VARCHAR(36) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                user_id INTEGER,
+                auth_type VARCHAR(64),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_topic_share_events_topic
+            ON topic_share_events(topic_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS post_share_events (
+                id VARCHAR(36) PRIMARY KEY,
+                post_id VARCHAR(36) NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                topic_id VARCHAR(36) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+                user_id INTEGER,
+                auth_type VARCHAR(64),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_post_share_events_post
+            ON post_share_events(post_id)
+        """))
+        session.execute(text("""
+            CREATE TABLE IF NOT EXISTS source_article_share_events (
+                id VARCHAR(36) PRIMARY KEY,
+                article_id BIGINT NOT NULL,
+                user_id INTEGER,
+                auth_type VARCHAR(64),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        session.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_source_article_share_events_article
+            ON source_article_share_events(article_id)
         """))
 
 
@@ -311,7 +415,242 @@ def create_topic(
     return get_topic(topic_id)
 
 
-def list_topics(category: str | None = None) -> list[dict]:
+def _topic_interaction_template() -> dict:
+    return {
+        "likes_count": 0,
+        "shares_count": 0,
+        "favorites_count": 0,
+        "liked": False,
+        "favorited": False,
+    }
+
+
+def _post_interaction_template() -> dict:
+    return {
+        "likes_count": 0,
+        "shares_count": 0,
+        "liked": False,
+    }
+
+
+def _source_interaction_template() -> dict:
+    return {
+        "likes_count": 0,
+        "shares_count": 0,
+        "favorites_count": 0,
+        "liked": False,
+        "favorited": False,
+    }
+
+
+def annotate_topics_with_interactions(
+    topics: list[dict],
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> list[dict]:
+    if not topics:
+        return topics
+    topic_ids = [item["id"] for item in topics]
+    topic_map = {item["id"]: item for item in topics}
+    for item in topics:
+        item["interaction"] = _topic_interaction_template()
+
+    with get_db_session() as session:
+        count_rows = session.execute(
+            text("""
+                SELECT
+                    a.topic_id,
+                    COALESCE(SUM(CASE WHEN liked THEN 1 ELSE 0 END), 0) AS likes_count,
+                    COALESCE(SUM(CASE WHEN favorited THEN 1 ELSE 0 END), 0) AS favorites_count,
+                    COALESCE(se.share_count, 0) AS shares_count
+                FROM topic_user_actions a
+                LEFT JOIN (
+                    SELECT topic_id, COUNT(*) AS share_count
+                    FROM topic_share_events
+                    WHERE topic_id IN :topic_ids
+                    GROUP BY topic_id
+                ) se ON se.topic_id = a.topic_id
+                WHERE a.topic_id IN :topic_ids
+                GROUP BY a.topic_id, se.share_count
+            """).bindparams(bindparam("topic_ids", expanding=True)),
+            {"topic_ids": topic_ids},
+        ).fetchall()
+        for row in count_rows:
+            interaction = topic_map[row.topic_id]["interaction"]
+            interaction["likes_count"] = int(row.likes_count or 0)
+            interaction["favorites_count"] = int(row.favorites_count or 0)
+            interaction["shares_count"] = int(row.shares_count or 0)
+
+        share_only_rows = session.execute(
+            text("""
+                SELECT topic_id, COUNT(*) AS share_count
+                FROM topic_share_events
+                WHERE topic_id IN :topic_ids
+                GROUP BY topic_id
+            """).bindparams(bindparam("topic_ids", expanding=True)),
+            {"topic_ids": topic_ids},
+        ).fetchall()
+        for row in share_only_rows:
+            topic_map[row.topic_id]["interaction"]["shares_count"] = int(row.share_count or 0)
+
+        if user_id is not None and auth_type:
+            state_rows = session.execute(
+                text("""
+                    SELECT topic_id, liked, favorited
+                    FROM topic_user_actions
+                    WHERE topic_id IN :topic_ids
+                      AND user_id = :user_id
+                      AND auth_type = :auth_type
+                """).bindparams(bindparam("topic_ids", expanding=True)),
+                {"topic_ids": topic_ids, "user_id": user_id, "auth_type": auth_type},
+            ).fetchall()
+            for row in state_rows:
+                interaction = topic_map[row.topic_id]["interaction"]
+                interaction["liked"] = bool(row.liked)
+                interaction["favorited"] = bool(row.favorited)
+    return topics
+
+
+def annotate_posts_with_interactions(
+    posts: list[dict],
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> list[dict]:
+    if not posts:
+        return posts
+    post_ids = [item["id"] for item in posts]
+    post_map = {item["id"]: item for item in posts}
+    for item in posts:
+        item["interaction"] = _post_interaction_template()
+
+    with get_db_session() as session:
+        count_rows = session.execute(
+            text("""
+                SELECT
+                    a.post_id,
+                    COALESCE(SUM(CASE WHEN liked THEN 1 ELSE 0 END), 0) AS likes_count,
+                    COALESCE(se.share_count, 0) AS shares_count
+                FROM post_user_actions a
+                LEFT JOIN (
+                    SELECT post_id, COUNT(*) AS share_count
+                    FROM post_share_events
+                    WHERE post_id IN :post_ids
+                    GROUP BY post_id
+                ) se ON se.post_id = a.post_id
+                WHERE a.post_id IN :post_ids
+                GROUP BY a.post_id, se.share_count
+            """).bindparams(bindparam("post_ids", expanding=True)),
+            {"post_ids": post_ids},
+        ).fetchall()
+        for row in count_rows:
+            post_map[row.post_id]["interaction"]["likes_count"] = int(row.likes_count or 0)
+            post_map[row.post_id]["interaction"]["shares_count"] = int(row.shares_count or 0)
+
+        share_only_rows = session.execute(
+            text("""
+                SELECT post_id, COUNT(*) AS share_count
+                FROM post_share_events
+                WHERE post_id IN :post_ids
+                GROUP BY post_id
+            """).bindparams(bindparam("post_ids", expanding=True)),
+            {"post_ids": post_ids},
+        ).fetchall()
+        for row in share_only_rows:
+            post_map[row.post_id]["interaction"]["shares_count"] = int(row.share_count or 0)
+
+        if user_id is not None and auth_type:
+            state_rows = session.execute(
+                text("""
+                    SELECT post_id, liked
+                    FROM post_user_actions
+                    WHERE post_id IN :post_ids
+                      AND user_id = :user_id
+                      AND auth_type = :auth_type
+                """).bindparams(bindparam("post_ids", expanding=True)),
+                {"post_ids": post_ids, "user_id": user_id, "auth_type": auth_type},
+            ).fetchall()
+            for row in state_rows:
+                post_map[row.post_id]["interaction"]["liked"] = bool(row.liked)
+    return posts
+
+
+def annotate_source_articles_with_interactions(
+    articles: list[dict],
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> list[dict]:
+    if not articles:
+        return articles
+    article_ids = [int(item["id"]) for item in articles]
+    article_map = {int(item["id"]): item for item in articles}
+    for item in articles:
+        item["interaction"] = _source_interaction_template()
+
+    with get_db_session() as session:
+        count_rows = session.execute(
+            text("""
+                SELECT
+                    a.article_id,
+                    COALESCE(SUM(CASE WHEN liked THEN 1 ELSE 0 END), 0) AS likes_count,
+                    COALESCE(SUM(CASE WHEN favorited THEN 1 ELSE 0 END), 0) AS favorites_count,
+                    COALESCE(se.share_count, 0) AS shares_count
+                FROM source_article_user_actions a
+                LEFT JOIN (
+                    SELECT article_id, COUNT(*) AS share_count
+                    FROM source_article_share_events
+                    WHERE article_id IN :article_ids
+                    GROUP BY article_id
+                ) se ON se.article_id = a.article_id
+                WHERE a.article_id IN :article_ids
+                GROUP BY a.article_id, se.share_count
+            """).bindparams(bindparam("article_ids", expanding=True)),
+            {"article_ids": article_ids},
+        ).fetchall()
+        for row in count_rows:
+            interaction = article_map[int(row.article_id)]["interaction"]
+            interaction["likes_count"] = int(row.likes_count or 0)
+            interaction["favorites_count"] = int(row.favorites_count or 0)
+            interaction["shares_count"] = int(row.shares_count or 0)
+
+        share_only_rows = session.execute(
+            text("""
+                SELECT article_id, COUNT(*) AS share_count
+                FROM source_article_share_events
+                WHERE article_id IN :article_ids
+                GROUP BY article_id
+            """).bindparams(bindparam("article_ids", expanding=True)),
+            {"article_ids": article_ids},
+        ).fetchall()
+        for row in share_only_rows:
+            article_map[int(row.article_id)]["interaction"]["shares_count"] = int(row.share_count or 0)
+
+        if user_id is not None and auth_type:
+            state_rows = session.execute(
+                text("""
+                    SELECT article_id, liked, favorited
+                    FROM source_article_user_actions
+                    WHERE article_id IN :article_ids
+                      AND user_id = :user_id
+                      AND auth_type = :auth_type
+                """).bindparams(bindparam("article_ids", expanding=True)),
+                {"article_ids": article_ids, "user_id": user_id, "auth_type": auth_type},
+            ).fetchall()
+            for row in state_rows:
+                interaction = article_map[int(row.article_id)]["interaction"]
+                interaction["liked"] = bool(row.liked)
+                interaction["favorited"] = bool(row.favorited)
+    return articles
+
+
+def list_topics(
+    category: str | None = None,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> list[dict]:
     with get_db_session() as session:
         if category:
             rows = session.execute(text("""
@@ -342,10 +681,16 @@ def list_topics(category: str | None = None) -> list[dict]:
                 LEFT JOIN discussion_runs r ON r.topic_id = t.id
                 ORDER BY t.updated_at DESC
             """)).fetchall()
-    return [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
+    topics = [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
+    return annotate_topics_with_interactions(topics, user_id=user_id, auth_type=auth_type)
 
 
-def get_topic(topic_id: str) -> dict | None:
+def get_topic(
+    topic_id: str,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> dict | None:
     with get_db_session() as session:
         row = session.execute(
             text("""
@@ -365,7 +710,9 @@ def get_topic(topic_id: str) -> dict | None:
         ).fetchone()
     if not row:
         return None
-    return topic_record_to_dict(_build_topic(row))
+    topic = topic_record_to_dict(_build_topic(row))
+    annotate_topics_with_interactions([topic], user_id=user_id, auth_type=auth_type)
+    return topic
 
 
 def update_topic(topic_id: str, data: dict) -> dict | None:
@@ -402,6 +749,15 @@ def update_topic(topic_id: str, data: dict) -> dict | None:
 
 def close_topic(topic_id: str) -> dict | None:
     return update_topic(topic_id, {"status": "closed"})
+
+
+def delete_topic(topic_id: str) -> bool:
+    with get_db_session() as session:
+        result = session.execute(
+            text("DELETE FROM topics WHERE id = :topic_id"),
+            {"topic_id": topic_id},
+        )
+    return bool(result.rowcount)
 
 
 def set_discussion_status(topic_id: str, status: str, *, turns_count: int | None = None, cost_usd: float | None = None,
@@ -451,7 +807,12 @@ def set_discussion_status(topic_id: str, status: str, *, turns_count: int | None
     return get_topic(topic_id)
 
 
-def list_posts(topic_id: str) -> list[dict]:
+def list_posts(
+    topic_id: str,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> list[dict]:
     with get_db_session() as session:
         rows = session.execute(
             text("""
@@ -461,16 +822,27 @@ def list_posts(topic_id: str) -> list[dict]:
             """),
             {"topic_id": topic_id},
         ).fetchall()
-    return [post_row_to_dict(row) for row in rows]
+    posts = [post_row_to_dict(row) for row in rows]
+    return annotate_posts_with_interactions(posts, user_id=user_id, auth_type=auth_type)
 
 
-def get_post(topic_id: str, post_id: str) -> dict | None:
+def get_post(
+    topic_id: str,
+    post_id: str,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> dict | None:
     with get_db_session() as session:
         row = session.execute(
             text("SELECT * FROM posts WHERE topic_id = :topic_id AND id = :post_id"),
             {"topic_id": topic_id, "post_id": post_id},
         ).fetchone()
-    return post_row_to_dict(row) if row else None
+    if not row:
+        return None
+    post = post_row_to_dict(row)
+    annotate_posts_with_interactions([post], user_id=user_id, auth_type=auth_type)
+    return post
 
 
 def upsert_post(post: dict) -> dict:
@@ -479,16 +851,19 @@ def upsert_post(post: dict) -> dict:
         session.execute(
             text("""
                 INSERT INTO posts (
-                    id, topic_id, author, author_type, expert_name, expert_label,
+                    id, topic_id, author, author_type, owner_user_id, owner_auth_type, delete_token_hash, expert_name, expert_label,
                     body, mentions, in_reply_to_id, status, created_at
                 ) VALUES (
-                    :id, :topic_id, :author, :author_type, :expert_name, :expert_label,
+                    :id, :topic_id, :author, :author_type, :owner_user_id, :owner_auth_type, :delete_token_hash, :expert_name, :expert_label,
                     :body, :mentions, :in_reply_to_id, :status, :created_at
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     topic_id = EXCLUDED.topic_id,
                     author = EXCLUDED.author,
                     author_type = EXCLUDED.author_type,
+                    owner_user_id = EXCLUDED.owner_user_id,
+                    owner_auth_type = EXCLUDED.owner_auth_type,
+                    delete_token_hash = EXCLUDED.delete_token_hash,
                     expert_name = EXCLUDED.expert_name,
                     expert_label = EXCLUDED.expert_label,
                     body = EXCLUDED.body,
@@ -502,6 +877,9 @@ def upsert_post(post: dict) -> dict:
                 "topic_id": post["topic_id"],
                 "author": post["author"],
                 "author_type": post["author_type"],
+                "owner_user_id": post.get("owner_user_id"),
+                "owner_auth_type": post.get("owner_auth_type"),
+                "delete_token_hash": post.get("delete_token_hash"),
                 "expert_name": post.get("expert_name"),
                 "expert_label": post.get("expert_label"),
                 "body": post.get("body", ""),
@@ -524,6 +902,9 @@ def make_post(
     expert_label: str | None = None,
     in_reply_to_id: str | None = None,
     status: str = "completed",
+    owner_user_id: int | None = None,
+    owner_auth_type: str | None = None,
+    delete_token_hash: str | None = None,
 ) -> dict:
     import re
 
@@ -532,6 +913,9 @@ def make_post(
         "topic_id": topic_id,
         "author": author,
         "author_type": author_type,
+        "owner_user_id": owner_user_id,
+        "owner_auth_type": owner_auth_type,
+        "delete_token_hash": delete_token_hash,
         "expert_name": expert_name,
         "expert_label": expert_label,
         "body": body,
@@ -844,6 +1228,8 @@ def post_row_to_dict(row) -> dict:
         "topic_id": row.topic_id,
         "author": row.author,
         "author_type": row.author_type,
+        "owner_user_id": getattr(row, "owner_user_id", None),
+        "owner_auth_type": getattr(row, "owner_auth_type", None),
         "expert_name": row.expert_name,
         "expert_label": row.expert_label,
         "body": row.body or "",
@@ -852,3 +1238,370 @@ def post_row_to_dict(row) -> dict:
         "status": row.status,
         "created_at": _to_iso(row.created_at),
     }
+
+
+def delete_post(topic_id: str, post_id: str) -> int:
+    with get_db_session() as session:
+        result = session.execute(
+            text("""
+                WITH RECURSIVE subtree AS (
+                    SELECT id
+                    FROM posts
+                    WHERE topic_id = :topic_id AND id = :post_id
+                    UNION ALL
+                    SELECT child.id
+                    FROM posts child
+                    JOIN subtree parent ON child.in_reply_to_id = parent.id
+                    WHERE child.topic_id = :topic_id
+                )
+                DELETE FROM posts
+                WHERE topic_id = :topic_id
+                  AND id IN (SELECT id FROM subtree)
+            """),
+            {"topic_id": topic_id, "post_id": post_id},
+        )
+    return int(result.rowcount or 0)
+
+
+def generate_post_delete_token() -> str:
+    return f"ptok_{secrets.token_urlsafe(24)}"
+
+
+def hash_post_delete_token(raw_token: str) -> str:
+    return sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def resolve_post_by_delete_token(raw_token: str) -> dict | None:
+    token_hash = hash_post_delete_token(raw_token)
+    with get_db_session() as session:
+        row = session.execute(
+            text("""
+                SELECT * FROM posts
+                WHERE delete_token_hash = :token_hash
+                LIMIT 1
+            """),
+            {"token_hash": token_hash},
+        ).fetchone()
+    return post_row_to_dict(row) if row else None
+
+
+def _cleanup_topic_user_action(topic_id: str, user_id: int, auth_type: str) -> None:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                DELETE FROM topic_user_actions
+                WHERE topic_id = :topic_id
+                  AND user_id = :user_id
+                  AND auth_type = :auth_type
+                  AND liked = FALSE
+                  AND favorited = FALSE
+            """),
+            {"topic_id": topic_id, "user_id": user_id, "auth_type": auth_type},
+        )
+
+
+def _cleanup_post_user_action(post_id: str, user_id: int, auth_type: str) -> None:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                DELETE FROM post_user_actions
+                WHERE post_id = :post_id
+                  AND user_id = :user_id
+                  AND auth_type = :auth_type
+                  AND liked = FALSE
+            """),
+            {"post_id": post_id, "user_id": user_id, "auth_type": auth_type},
+        )
+
+
+def _cleanup_source_article_user_action(article_id: int, user_id: int, auth_type: str) -> None:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                DELETE FROM source_article_user_actions
+                WHERE article_id = :article_id
+                  AND user_id = :user_id
+                  AND auth_type = :auth_type
+                  AND liked = FALSE
+                  AND favorited = FALSE
+            """),
+            {"article_id": article_id, "user_id": user_id, "auth_type": auth_type},
+        )
+
+
+def set_topic_user_action(
+    topic_id: str,
+    *,
+    user_id: int,
+    auth_type: str,
+    liked: bool | None = None,
+    favorited: bool | None = None,
+) -> dict:
+    now = utc_now()
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO topic_user_actions (
+                    topic_id, user_id, auth_type, liked, favorited, created_at, updated_at
+                ) VALUES (
+                    :topic_id, :user_id, :auth_type, :liked, :favorited, :created_at, :updated_at
+                )
+                ON CONFLICT (topic_id, user_id, auth_type) DO UPDATE SET
+                    liked = COALESCE(:liked, topic_user_actions.liked),
+                    favorited = COALESCE(:favorited, topic_user_actions.favorited),
+                    updated_at = :updated_at
+            """),
+            {
+                "topic_id": topic_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "liked": liked,
+                "favorited": favorited,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+    _cleanup_topic_user_action(topic_id, user_id, auth_type)
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
+    if topic is None:
+        raise KeyError(topic_id)
+    return topic["interaction"]
+
+
+def set_post_user_action(
+    topic_id: str,
+    post_id: str,
+    *,
+    user_id: int,
+    auth_type: str,
+    liked: bool,
+) -> dict:
+    now = utc_now()
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO post_user_actions (
+                    post_id, topic_id, user_id, auth_type, liked, created_at, updated_at
+                ) VALUES (
+                    :post_id, :topic_id, :user_id, :auth_type, :liked, :created_at, :updated_at
+                )
+                ON CONFLICT (post_id, user_id, auth_type) DO UPDATE SET
+                    liked = :liked,
+                    updated_at = :updated_at
+            """),
+            {
+                "post_id": post_id,
+                "topic_id": topic_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "liked": liked,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+    _cleanup_post_user_action(post_id, user_id, auth_type)
+    post = get_post(topic_id, post_id, user_id=user_id, auth_type=auth_type)
+    if post is None:
+        raise KeyError(post_id)
+    return post["interaction"]
+
+
+def set_source_article_user_action(
+    article_id: int,
+    *,
+    user_id: int,
+    auth_type: str,
+    liked: bool | None = None,
+    favorited: bool | None = None,
+    snapshot: dict | None = None,
+) -> dict:
+    now = utc_now()
+    snapshot = snapshot or {}
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO source_article_user_actions (
+                    article_id, user_id, auth_type, liked, favorited,
+                    snapshot_title, snapshot_source_feed_name, snapshot_source_type,
+                    snapshot_url, snapshot_pic_url, snapshot_description,
+                    snapshot_publish_time, snapshot_created_at, created_at, updated_at
+                ) VALUES (
+                    :article_id, :user_id, :auth_type, :liked, :favorited,
+                    :snapshot_title, :snapshot_source_feed_name, :snapshot_source_type,
+                    :snapshot_url, :snapshot_pic_url, :snapshot_description,
+                    :snapshot_publish_time, :snapshot_created_at, :created_at, :updated_at
+                )
+                ON CONFLICT (article_id, user_id, auth_type) DO UPDATE SET
+                    liked = COALESCE(:liked, source_article_user_actions.liked),
+                    favorited = COALESCE(:favorited, source_article_user_actions.favorited),
+                    snapshot_title = COALESCE(NULLIF(:snapshot_title, ''), source_article_user_actions.snapshot_title),
+                    snapshot_source_feed_name = COALESCE(NULLIF(:snapshot_source_feed_name, ''), source_article_user_actions.snapshot_source_feed_name),
+                    snapshot_source_type = COALESCE(NULLIF(:snapshot_source_type, ''), source_article_user_actions.snapshot_source_type),
+                    snapshot_url = COALESCE(NULLIF(:snapshot_url, ''), source_article_user_actions.snapshot_url),
+                    snapshot_pic_url = COALESCE(:snapshot_pic_url, source_article_user_actions.snapshot_pic_url),
+                    snapshot_description = COALESCE(NULLIF(:snapshot_description, ''), source_article_user_actions.snapshot_description),
+                    snapshot_publish_time = COALESCE(NULLIF(:snapshot_publish_time, ''), source_article_user_actions.snapshot_publish_time),
+                    snapshot_created_at = COALESCE(NULLIF(:snapshot_created_at, ''), source_article_user_actions.snapshot_created_at),
+                    updated_at = :updated_at
+            """),
+            {
+                "article_id": article_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "liked": liked,
+                "favorited": favorited,
+                "snapshot_title": str(snapshot.get("title") or ""),
+                "snapshot_source_feed_name": str(snapshot.get("source_feed_name") or ""),
+                "snapshot_source_type": str(snapshot.get("source_type") or ""),
+                "snapshot_url": str(snapshot.get("url") or ""),
+                "snapshot_pic_url": snapshot.get("pic_url"),
+                "snapshot_description": str(snapshot.get("description") or ""),
+                "snapshot_publish_time": str(snapshot.get("publish_time") or ""),
+                "snapshot_created_at": str(snapshot.get("created_at") or ""),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+    _cleanup_source_article_user_action(article_id, user_id, auth_type)
+    article = {"id": article_id}
+    annotate_source_articles_with_interactions([article], user_id=user_id, auth_type=auth_type)
+    return article["interaction"]
+
+
+def record_topic_share(topic_id: str, *, user_id: int | None = None, auth_type: str | None = None) -> dict:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO topic_share_events (id, topic_id, user_id, auth_type, created_at)
+                VALUES (:id, :topic_id, :user_id, :auth_type, :created_at)
+            """),
+            {
+                "id": str(uuid.uuid4()),
+                "topic_id": topic_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "created_at": utc_now(),
+            },
+        )
+    topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
+    if topic is None:
+        raise KeyError(topic_id)
+    return topic["interaction"]
+
+
+def record_post_share(
+    topic_id: str,
+    post_id: str,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> dict:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO post_share_events (id, post_id, topic_id, user_id, auth_type, created_at)
+                VALUES (:id, :post_id, :topic_id, :user_id, :auth_type, :created_at)
+            """),
+            {
+                "id": str(uuid.uuid4()),
+                "post_id": post_id,
+                "topic_id": topic_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "created_at": utc_now(),
+            },
+        )
+    post = get_post(topic_id, post_id, user_id=user_id, auth_type=auth_type)
+    if post is None:
+        raise KeyError(post_id)
+    return post["interaction"]
+
+
+def record_source_article_share(
+    article_id: int,
+    *,
+    user_id: int | None = None,
+    auth_type: str | None = None,
+) -> dict:
+    with get_db_session() as session:
+        session.execute(
+            text("""
+                INSERT INTO source_article_share_events (id, article_id, user_id, auth_type, created_at)
+                VALUES (:id, :article_id, :user_id, :auth_type, :created_at)
+            """),
+            {
+                "id": str(uuid.uuid4()),
+                "article_id": article_id,
+                "user_id": user_id,
+                "auth_type": auth_type,
+                "created_at": utc_now(),
+            },
+        )
+    article = {"id": article_id}
+    annotate_source_articles_with_interactions([article], user_id=user_id, auth_type=auth_type)
+    return article["interaction"]
+
+
+def list_user_favorite_topics(*, user_id: int, auth_type: str) -> list[dict]:
+    with get_db_session() as session:
+        rows = session.execute(
+            text("""
+                SELECT
+                    t.*,
+                    r.status AS run_status,
+                    r.turns_count,
+                    r.cost_usd,
+                    r.completed_at,
+                    r.discussion_summary,
+                    r.discussion_history
+                FROM topic_user_actions a
+                JOIN topics t ON t.id = a.topic_id
+                LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                WHERE a.user_id = :user_id
+                  AND a.auth_type = :auth_type
+                  AND a.favorited = TRUE
+                ORDER BY a.updated_at DESC
+            """),
+            {"user_id": user_id, "auth_type": auth_type},
+        ).fetchall()
+    topics = [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
+    return annotate_topics_with_interactions(topics, user_id=user_id, auth_type=auth_type)
+
+
+def list_user_favorite_source_articles(*, user_id: int, auth_type: str) -> list[dict]:
+    with get_db_session() as session:
+        rows = session.execute(
+            text("""
+                SELECT
+                    article_id,
+                    snapshot_title,
+                    snapshot_source_feed_name,
+                    snapshot_source_type,
+                    snapshot_url,
+                    snapshot_pic_url,
+                    snapshot_description,
+                    snapshot_publish_time,
+                    snapshot_created_at
+                FROM source_article_user_actions
+                WHERE user_id = :user_id
+                  AND auth_type = :auth_type
+                  AND favorited = TRUE
+                ORDER BY updated_at DESC
+            """),
+            {"user_id": user_id, "auth_type": auth_type},
+        ).fetchall()
+    articles = [
+        {
+            "id": int(row.article_id),
+            "title": row.snapshot_title or "",
+            "source_feed_name": row.snapshot_source_feed_name or "",
+            "source_type": row.snapshot_source_type or "",
+            "url": row.snapshot_url or "",
+            "pic_url": row.snapshot_pic_url,
+            "description": row.snapshot_description or "",
+            "publish_time": row.snapshot_publish_time or "",
+            "created_at": row.snapshot_created_at or "",
+        }
+        for row in rows
+    ]
+    return annotate_source_articles_with_interactions(articles, user_id=user_id, auth_type=auth_type)

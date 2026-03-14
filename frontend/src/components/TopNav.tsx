@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
-import { tokenManager, User } from '../api/auth'
+import { refreshCurrentUserProfile, tokenManager, User } from '../api/auth'
 
 const navLinks = [
   { to: '/', label: '话题列表', match: (path: string) => path === '/' && !path.startsWith('/topics') && !path.startsWith('/source-feed') && !path.startsWith('/library') && !path.startsWith('/profile-helper') && !path.startsWith('/agent-links') },
@@ -15,28 +15,39 @@ export default function TopNav() {
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [user, setUser] = useState<User | null>(null)
+  const [adminMode, setAdminMode] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [userMenuPosition, setUserMenuPosition] = useState({ top: 0, left: 0 })
   const userMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
-  const loadUser = useCallback(() => {
-    const savedUser = tokenManager.getUser()
+  const loadUser = useCallback(async () => {
     const token = tokenManager.get()
+    if (token) {
+      const latestUser = await refreshCurrentUserProfile()
+      if (latestUser) {
+        setUser(latestUser)
+        setAdminMode(Boolean(latestUser.is_admin))
+        return
+      }
+    }
+    const savedUser = tokenManager.getUser()
     if (savedUser && token) {
       setUser(savedUser)
+      setAdminMode(Boolean(savedUser.is_admin))
     } else {
       setUser(null)
+      setAdminMode(false)
     }
   }, [])
 
   useEffect(() => {
-    loadUser()
+    void loadUser()
   }, [location.pathname, loadUser])
 
   useEffect(() => {
-    const handleStorageChange = () => loadUser()
-    const handleAuthChange = () => loadUser()
+    const handleStorageChange = () => { void loadUser() }
+    const handleAuthChange = () => { void loadUser() }
     window.addEventListener('storage', handleStorageChange)
     window.addEventListener('auth-change', handleAuthChange)
     return () => {
@@ -114,6 +125,11 @@ export default function TopNav() {
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 w-full bg-white border-b border-gray-200 safe-area-inset-top overflow-x-hidden">
+      {adminMode && location.pathname === '/' ? (
+        <div className="w-full bg-red-600 px-4 py-2 text-center text-xs font-medium tracking-[0.18em] text-white">
+          ADMIN MODE
+        </div>
+      ) : null}
       <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between min-w-0">
         <Link to="/" className="flex items-center gap-2 min-w-0 shrink" onClick={() => setMobileMenuOpen(false)}>
           <span className="text-black font-serif font-bold text-base tracking-tight truncate">Topic Lab</span>
@@ -250,6 +266,13 @@ export default function TopNav() {
                 <div className="px-2 py-2 text-sm font-serif text-gray-600">
                   {user.username || user.phone}
                 </div>
+                <Link
+                  to="/favorites"
+                  className={linkClass(location.pathname.startsWith('/favorites'))}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  我的收藏
+                </Link>
                 <button
                   type="button"
                   onClick={() => { handleLogout(); setMobileMenuOpen(false); }}
@@ -291,6 +314,13 @@ export default function TopNav() {
               transform: 'translateX(-100%)',
             }}
           >
+            <Link
+              to="/favorites"
+              className="block px-4 py-2 text-sm font-serif text-gray-600 hover:bg-gray-50 hover:text-black"
+              onClick={() => setUserMenuOpen(false)}
+            >
+              我的收藏
+            </Link>
             <Link
               to="/profile-helper"
               className="block px-4 py-2 text-sm font-serif text-gray-600 hover:bg-gray-50 hover:text-black"

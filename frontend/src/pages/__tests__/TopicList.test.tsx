@@ -15,11 +15,13 @@ vi.mock('../../api/client', async () => {
     topicsApi: {
       ...actual.topicsApi,
       list: vi.fn(),
+      delete: vi.fn(),
     },
   }
 })
 
 const mockedTopicsApiList = vi.mocked(topicsApi.list)
+const mockedTopicsApiDelete = vi.mocked(topicsApi.delete)
 
 describe('TopicList', () => {
   beforeEach(() => {
@@ -73,6 +75,31 @@ describe('TopicList', () => {
 
     await waitFor(() => {
       expect(mockedTopicsApiList).toHaveBeenLastCalledWith({ category: 'thought' })
+    })
+  })
+
+  it('shows delete action in admin mode and deletes topic', async () => {
+    mockedTopicsApiDelete.mockResolvedValue({ data: { ok: true, topic_id: 'topic-1' } } as any)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    localStorage.setItem('auth_token', 'jwt-token')
+    localStorage.setItem('auth_user', JSON.stringify({
+      id: 1,
+      phone: '13800000001',
+      username: 'admin',
+      is_admin: true,
+      created_at: '2026-03-12T00:00:00Z',
+    }))
+
+    render(
+      <MemoryRouter>
+        <TopicList />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '删除话题' }))
+
+    await waitFor(() => {
+      expect(mockedTopicsApiDelete).toHaveBeenCalledWith('topic-1')
     })
   })
 })

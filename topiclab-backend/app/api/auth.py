@@ -45,6 +45,7 @@ else:
             "phone": phone,
             "password": password,
             "username": username,
+            "is_admin": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _dev_users[phone] = user
@@ -117,6 +118,39 @@ class OpenClawKeyResponse(BaseModel):
     skill_path: str | None = None
 
 
+def _split_csv_env(name: str) -> set[str]:
+    raw = os.getenv(name, "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _is_admin_identity(user_id: int | None, phone: str | None, db_is_admin: bool = False) -> bool:
+    if db_is_admin:
+        return True
+    admin_ids = _split_csv_env("ADMIN_USER_IDS")
+    admin_phones = _split_csv_env("ADMIN_PHONE_NUMBERS")
+    if user_id is not None and str(user_id) in admin_ids:
+        return True
+    if phone and phone in admin_phones:
+        return True
+    return False
+
+
+def _load_user_admin_flag(user_id: int | None, phone: str | None) -> bool:
+    if DATABASE_CONFIGURED and user_id is not None:
+        with get_db_session() as session:
+            row = session.execute(
+                text("SELECT is_admin, phone FROM users WHERE id = :id"),
+                {"id": user_id},
+            ).fetchone()
+        if row:
+            return _is_admin_identity(user_id, row[1], bool(row[0]))
+    if phone:
+        user = _get_dev_user(phone) if not DATABASE_CONFIGURED else None
+        if user:
+            return _is_admin_identity(user.get("id"), phone, bool(user.get("is_admin")))
+    return _is_admin_identity(user_id, phone)
+
+
 # Helper Functions
 def generate_code() -> str:
     return str(random.randint(100000, 999999))
@@ -150,9 +184,9 @@ async def send_sms(phone: str, code: str) -> tuple[bool, str]:
             return False, "短信发送失败，请稍后重试"
 
 
-def create_jwt_token(user_id: int, phone: str) -> str:
+def create_jwt_token(user_id: int, phone: str, *, is_admin: bool = False) -> str:
     expiration = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
-    payload = {"sub": str(user_id), "phone": phone, "exp": expiration}
+    payload = {"sub": str(user_id), "phone": phone, "exp": expiration, "is_admin": is_admin}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -275,6 +309,7 @@ def verify_openclaw_api_key(token: str) -> Optional[dict]:
                 text(
                     """
                     SELECT u.id, u.phone, u.username
+                        , u.is_admin
                     FROM openclaw_api_keys k
                     JOIN users u ON u.id = k.user_id
                     WHERE k.token_hash = :token_hash
@@ -299,6 +334,7 @@ def verify_openclaw_api_key(token: str) -> Optional[dict]:
             "phone": row[1],
             "username": row[2],
             "auth_type": "openclaw_key",
+            "is_admin": _is_admin_identity(int(row[0]), row[1], bool(row[3])),
         }
 
     for user in _dev_users.values():
@@ -311,6 +347,7 @@ def verify_openclaw_api_key(token: str) -> Optional[dict]:
                 "phone": user["phone"],
                 "username": user.get("username"),
                 "auth_type": "openclaw_key",
+                "is_admin": _is_admin_identity(user_id, user["phone"], bool(user.get("is_admin"))),
             }
     return None
 
@@ -319,6 +356,8 @@ def verify_access_token(token: str) -> Optional[dict]:
     jwt_payload = verify_jwt_token(token)
     if jwt_payload:
         jwt_payload.setdefault("auth_type", "jwt")
+        user_id = int(jwt_payload["sub"]) if jwt_payload.get("sub") is not None else None
+        jwt_payload["is_admin"] = _load_user_admin_flag(user_id, jwt_payload.get("phone"))
         return jwt_payload
     return verify_openclaw_api_key(token)
 
@@ -410,14 +449,19 @@ async def register(req: RegisterRequest):
             hashed_password = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             result = session.execute(
                 text("""
-                    INSERT INTO users (phone, password, username)
-                    VALUES (:phone, :password, :username)
-                    RETURNING id, phone, username, created_at
+                    INSERT INTO users (phone, password, username, is_admin)
+                    VALUES (:phone, :password, :username, :is_admin)
+                    RETURNING id, phone, username, is_admin, created_at
                 """),
-                {"phone": req.phone, "password": hashed_password, "username": req.username}
+                {
+                    "phone": req.phone,
+                    "password": hashed_password,
+                    "username": req.username,
+                    "is_admin": _is_admin_identity(None, req.phone),
+                }
             )
             row = result.fetchone()
-            user = {"id": row[0], "phone": row[1], "username": row[2], "created_at": row[3].isoformat()}
+            user = {"id": row[0], "phone": row[1], "username": row[2], "is_admin": bool(row[3]), "created_at": row[4].isoformat()}
     else:
         if not _verify_dev_code(req.phone, req.code, "register"):
             raise HTTPException(status_code=400, detail="验证码错误或已过期")
@@ -425,13 +469,14 @@ async def register(req: RegisterRequest):
             raise HTTPException(status_code=400, detail="该手机号已注册")
         hashed_password = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         user = _create_dev_user(req.phone, hashed_password, req.username)
+        user["is_admin"] = _is_admin_identity(user["id"], req.phone)
         user["created_at"] = user["created_at"]
 
-    token = create_jwt_token(user["id"], user["phone"])
+    token = create_jwt_token(user["id"], user["phone"], is_admin=bool(user.get("is_admin")))
     return {
         "message": "注册成功",
         "token": token,
-        "user": {"id": user["id"], "phone": user["phone"], "username": user.get("username"), "created_at": user["created_at"]},
+        "user": {"id": user["id"], "phone": user["phone"], "username": user.get("username"), "is_admin": bool(user.get("is_admin")), "created_at": user["created_at"]},
     }
 
 
@@ -440,12 +485,12 @@ async def login(req: LoginRequest):
     if DATABASE_CONFIGURED:
         with get_db_session() as session:
             row = session.execute(
-                text("SELECT id, phone, password, username, created_at FROM users WHERE phone = :phone"),
+                text("SELECT id, phone, password, username, is_admin, created_at FROM users WHERE phone = :phone"),
                 {"phone": req.phone}
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=400, detail="手机号或密码错误")
-            user = {"id": row[0], "phone": row[1], "password": row[2], "username": row[3], "created_at": row[4].isoformat()}
+            user = {"id": row[0], "phone": row[1], "password": row[2], "username": row[3], "is_admin": bool(row[4]), "created_at": row[5].isoformat()}
     else:
         user = _get_dev_user(req.phone)
         if not user:
@@ -458,11 +503,12 @@ async def login(req: LoginRequest):
     if not password_valid:
         raise HTTPException(status_code=400, detail="手机号或密码错误")
 
-    token = create_jwt_token(user["id"], user["phone"])
+    user["is_admin"] = _is_admin_identity(user["id"], user["phone"], bool(user.get("is_admin")))
+    token = create_jwt_token(user["id"], user["phone"], is_admin=bool(user.get("is_admin")))
     return {
         "message": "登录成功",
         "token": token,
-        "user": {"id": user["id"], "phone": user["phone"], "username": user.get("username"), "created_at": user["created_at"]},
+        "user": {"id": user["id"], "phone": user["phone"], "username": user.get("username"), "is_admin": bool(user.get("is_admin")), "created_at": user["created_at"]},
     }
 
 
@@ -471,17 +517,17 @@ async def get_me(user: dict = Depends(get_current_user)):
     if DATABASE_CONFIGURED:
         with get_db_session() as session:
             row = session.execute(
-                text("SELECT id, phone, username, created_at FROM users WHERE id = :id"),
+                text("SELECT id, phone, username, is_admin, created_at FROM users WHERE id = :id"),
                 {"id": int(user["sub"])}
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="用户不存在")
-            user_data = {"id": row[0], "phone": row[1], "username": row[2], "created_at": row[3].isoformat()}
+            user_data = {"id": row[0], "phone": row[1], "username": row[2], "is_admin": _is_admin_identity(row[0], row[1], bool(row[3])), "created_at": row[4].isoformat()}
     else:
         u = _get_dev_user(user["phone"])
         if not u:
             raise HTTPException(status_code=404, detail="用户不存在")
-        user_data = {"id": u["id"], "phone": u["phone"], "username": u.get("username"), "created_at": u["created_at"]}
+        user_data = {"id": u["id"], "phone": u["phone"], "username": u.get("username"), "is_admin": _is_admin_identity(u["id"], u["phone"], bool(u.get("is_admin"))), "created_at": u["created_at"]}
 
     return {"user": user_data, "auth_type": user.get("auth_type", "jwt")}
 

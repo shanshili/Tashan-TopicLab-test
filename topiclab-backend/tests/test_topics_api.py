@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import bcrypt
@@ -10,9 +11,6 @@ from sqlalchemy import text
 
 from app.services.content_moderation import ModerationDecision
 
-POST_ADMIN_TOKEN = "8a77ef08d429125d20dbac25a2ae0f0cfc6220c66568ac433a80d70d20e933b3"
-
-
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     database_path = tmp_path / "topiclab-test.db"
@@ -21,8 +19,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSPACE_BASE", str(workspace_base))
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("RESONNET_BASE_URL", "http://resonnet.test")
+    monkeypatch.setenv("ADMIN_PHONE_NUMBERS", "13800000001")
 
-    from app.storage.database import postgres_client
+    from app.storage.database import postgres_client, topic_store
     postgres_client.reset_db_state()
 
     import app.api.auth as auth_module
@@ -30,6 +29,7 @@ def client(tmp_path, monkeypatch):
     import main as main_module
 
     importlib.reload(postgres_client)
+    importlib.reload(topic_store)
     importlib.reload(auth_module)
     topics_module = importlib.reload(topics_module)
     main_module = importlib.reload(main_module)
@@ -110,7 +110,49 @@ def client(tmp_path, monkeypatch):
     postgres_client.reset_db_state()
 
 
+def register_and_login(client, *, phone: str, username: str, password: str = "password123") -> dict:
+    from app.storage.database.postgres_client import get_db_session
+
+    code = "123456"
+    with get_db_session() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO verification_codes (phone, code, type, expires_at)
+                VALUES (:phone, :code, 'register', :expires_at)
+                """
+            ),
+            {
+                "phone": phone,
+                "code": code,
+                "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+            },
+        )
+
+    register = client.post(
+        "/auth/register",
+        json={
+            "phone": phone,
+            "code": code,
+            "password": password,
+            "username": username,
+        },
+    )
+    if register.status_code == 200:
+        token = register.json()["token"]
+        return {"token": token, "user": register.json()["user"]}
+
+    assert register.status_code == 400, register.text
+    login = client.post(
+        "/auth/login",
+        json={"phone": phone, "password": password},
+    )
+    assert login.status_code == 200, login.text
+    return {"token": login.json()["token"], "user": login.json()["user"]}
+
+
 def test_topic_create_list_and_posts(client):
+    admin = register_and_login(client, phone="13800000001", username="admin")
     create = client.post("/topics", json={"title": "话题A", "body": "正文", "category": "research"})
     assert create.status_code == 201, create.text
     topic = create.json()
@@ -126,19 +168,28 @@ def test_topic_create_list_and_posts(client):
     assert filtered.status_code == 200
     assert filtered.json()[0]["id"] == topic_id
 
-    post_resp = client.post(f"/topics/{topic_id}/posts", json={"author": "alice", "body": "第一条"})
+    post_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "alice", "body": "我支持把话题列表里的管理能力补齐，方便管理员直接处理内容。"},
+    )
     assert post_resp.status_code == 201
     assert post_resp.json()["delete_token"].startswith("ptok_")
     assert not topic_workspace.exists()
     listed_posts = client.get(f"/topics/{topic_id}/posts")
     assert listed_posts.status_code == 200
-    assert listed_posts.json()[0]["body"] == "第一条"
+    assert listed_posts.json()[0]["body"] == "我支持把话题列表里的管理能力补齐，方便管理员直接处理内容。"
 
-    delete_resp = client.delete(f"/topics/{topic_id}/posts/{post_resp.json()['id']}?token={POST_ADMIN_TOKEN}")
+    delete_resp = client.delete(
+        f"/topics/{topic_id}/posts/{post_resp.json()['id']}",
+        headers={"Authorization": f"Bearer {admin['token']}"},
+    )
     assert delete_resp.status_code == 200, delete_resp.text
     assert delete_resp.json()["ok"] is True
 
-    topic_delete_resp = client.delete(f"/topics/{topic_id}?token={POST_ADMIN_TOKEN}")
+    topic_delete_resp = client.delete(
+        f"/topics/{topic_id}",
+        headers={"Authorization": f"Bearer {admin['token']}"},
+    )
     assert topic_delete_resp.status_code == 200, topic_delete_resp.text
     assert topic_delete_resp.json()["ok"] is True
 
@@ -149,6 +200,10 @@ def test_topic_create_list_and_posts(client):
 def test_discussion_and_mention_complete_via_executor(client):
     topic = client.post("/topics", json={"title": "执行测试", "body": "验证异步任务"}).json()
     topic_id = topic["id"]
+
+    experts = client.get(f"/topics/{topic_id}/experts")
+    assert experts.status_code == 200, experts.text
+    assert experts.json()[0]["name"] == "physicist"
 
     mention = client.post(
         f"/topics/{topic_id}/posts/mention",
@@ -184,6 +239,108 @@ def test_discussion_and_mention_complete_via_executor(client):
         time.sleep(0.1)
     assert latest_status is not None
     assert latest_status.json()["result"]["discussion_summary"].startswith("总结")
+
+
+def test_post_delete_permissions_and_subtree_cascade(client):
+    owner = register_and_login(client, phone="13800000002", username="owner")
+    other = register_and_login(client, phone="13800000003", username="other")
+    admin = register_and_login(client, phone="13800000001", username="admin")
+
+    topic = client.post("/topics", json={"title": "删除测试", "body": "验证权限"}).json()
+    topic_id = topic["id"]
+
+    root_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "owner", "body": "这是根帖，用来验证父级回复与整段讨论结构之间的关联。"},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert root_resp.status_code == 201, root_resp.text
+    root = root_resp.json()
+    child_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "owner", "body": "这是二级回复，用来验证嵌套回复关系会被完整识别。", "in_reply_to_id": root["id"]},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert child_resp.status_code == 201, child_resp.text
+    child = child_resp.json()
+    grandchild_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "owner", "body": "这是三级回复，用来验证更深层的回复链同样能被追踪。", "in_reply_to_id": child["id"]},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert grandchild_resp.status_code == 201, grandchild_resp.text
+    grandchild = grandchild_resp.json()
+
+    forbidden = client.delete(
+        f"/topics/{topic_id}/posts/{root['id']}",
+        headers={"Authorization": f"Bearer {other['token']}"},
+    )
+    assert forbidden.status_code == 403
+
+    deleted = client.delete(
+        f"/topics/{topic_id}/posts/{root['id']}",
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_count"] == 3
+    assert client.get(f"/topics/{topic_id}/posts").json() == []
+
+    admin_root_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "owner", "body": "这是另一条根帖，用来验证管理员对完整回复树的管理能力。"},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert admin_root_resp.status_code == 201, admin_root_resp.text
+    admin_root = admin_root_resp.json()
+    admin_child_resp = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "owner", "body": "这是对应的子级回复，用来验证管理员对嵌套结构的处理。", "in_reply_to_id": admin_root["id"]},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert admin_child_resp.status_code == 201, admin_child_resp.text
+    admin_child = admin_child_resp.json()
+
+    admin_delete = client.delete(
+        f"/topics/{topic_id}/posts/{admin_root['id']}",
+        headers={"Authorization": f"Bearer {admin['token']}"},
+    )
+    assert admin_delete.status_code == 200, admin_delete.text
+    assert admin_delete.json()["deleted_count"] == 2
+    assert client.get(f"/topics/{topic_id}/posts").json() == []
+
+
+def test_topic_delete_permissions(client):
+    owner = register_and_login(client, phone="13800000002", username="owner")
+    other = register_and_login(client, phone="13800000003", username="other")
+    admin = register_and_login(client, phone="13800000001", username="admin")
+    owner_topic = client.post(
+        "/topics",
+        json={"title": "权限测试", "body": "正文"},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    ).json()
+
+    forbidden = client.delete(
+        f"/topics/{owner_topic['id']}",
+        headers={"Authorization": f"Bearer {other['token']}"},
+    )
+    assert forbidden.status_code == 403
+
+    owner_deleted = client.delete(
+        f"/topics/{owner_topic['id']}",
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert owner_deleted.status_code == 200, owner_deleted.text
+
+    admin_topic = client.post(
+        "/topics",
+        json={"title": "管理员删除", "body": "正文"},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    ).json()
+    deleted = client.delete(
+        f"/topics/{admin_topic['id']}",
+        headers={"Authorization": f"Bearer {admin['token']}"},
+    )
+    assert deleted.status_code == 200, deleted.text
 
 
 def test_create_post_rejects_when_content_moderation_fails(client, monkeypatch):
@@ -325,10 +482,10 @@ def test_api_v1_topics_alias_and_home_payload(client, monkeypatch):
 
     post = client.post(
         f"/api/v1/topics/{topic_id}/posts",
-        json={"author": "alice", "body": "第一条来自 /api/v1 的帖子"},
+        json={"author": "alice", "body": "这是一条通过 /api/v1 发布的完整讨论帖子，用来验证发帖链路。"},
     )
     assert post.status_code == 201, post.text
-    assert post.json()["body"] == "第一条来自 /api/v1 的帖子"
+    assert post.json()["body"] == "这是一条通过 /api/v1 发布的完整讨论帖子，用来验证发帖链路。"
 
     home = client.get("/api/v1/home")
     assert home.status_code == 200, home.text
@@ -424,7 +581,10 @@ def test_openclaw_key_can_bind_user_identity_and_render_personal_skill(client):
     assert post_resp.status_code == 201, post_resp.text
     assert post_resp.json()["author"] == "openclaw-user"
 
-    delete_resp = client.delete(f"/api/v1/topics/{topic_id}/posts/{post_resp.json()['id']}?token={POST_ADMIN_TOKEN}")
+    delete_resp = client.delete(
+        f"/api/v1/topics/{topic_id}/posts/{post_resp.json()['id']}",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
     assert delete_resp.status_code == 200, delete_resp.text
     assert delete_resp.json()["ok"] is True
 
