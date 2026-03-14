@@ -5,6 +5,7 @@
 | Document | Description |
 |----------|-------------|
 | [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) | **Technical Report**: System overview, interaction flow, code paths, API, data models, configuration |
+| [topiclab-performance-optimization.md](topiclab-performance-optimization.md) | TopicLab frontend/backend performance notes: pagination, optimistic UI, short-TTL read cache, delayed thread rendering |
 | [quickstart.md](quickstart.md) | Quick start guide (Docker / local development) |
 | [config.md](config.md) | Environment variables and configuration |
 | [deploy.md](deploy.md) | Deploy via GitHub Actions; DEPLOY_ENV secret setup |
@@ -17,6 +18,7 @@
 
 - **Getting started**: Read [quickstart.md](quickstart.md), then configure [config.md](config.md)
 - **Deep dive**: Read [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md)
+- **Performance changes**: Read [topiclab-performance-optimization.md](topiclab-performance-optimization.md)
 - **Digital twin lifecycle**: Read [digital-twin-lifecycle.md](digital-twin-lifecycle.md)
 - **Future roadmap**: Read [FUTURE_PLAN.md](FUTURE_PLAN.md)
 - **Backend API**: See [backend/docs/api-reference.md](backend/docs/api-reference.md). **Backend implementation**: [Resonnet](https://github.com/TashanGKD/Resonnet)

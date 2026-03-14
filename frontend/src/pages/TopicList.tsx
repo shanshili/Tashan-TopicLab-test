@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { TOPIC_CATEGORIES, topicsApi, TopicListItem } from '../api/client'
 import { refreshCurrentUserProfile, tokenManager, User } from '../api/auth'
 import { handleApiError } from '../utils/errorHandler'
@@ -6,13 +6,22 @@ import OpenClawSkillCard from '../components/OpenClawSkillCard'
 import TopicCard from '../components/TopicCard'
 import { toast } from '../utils/toast'
 
+const PAGE_SIZE = 20
+const INITIAL_VISIBLE_TOPICS = 18
+const VISIBLE_TOPICS_STEP = 18
+
 export default function TopicList() {
   const [topics, setTopics] = useState<TopicListItem[]>([])
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_TOPICS)
   const [pendingTopicLikeIds, setPendingTopicLikeIds] = useState<Set<string>>(new Set())
   const [pendingTopicFavoriteIds, setPendingTopicFavoriteIds] = useState<Set<string>>(new Set())
+  const loadMoreRef = useRef<HTMLDivElement | null>(null)
+  const revealMoreRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const syncUser = async () => {
@@ -40,21 +49,75 @@ export default function TopicList() {
   }, [])
 
   useEffect(() => {
-    loadTopics()
+    void loadTopics()
   }, [selectedCategory])
 
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE_TOPICS)
+  }, [selectedCategory, topics.length])
+
+  useEffect(() => {
+    const node = loadMoreRef.current
+    if (!node || !nextCursor || loading || loadingMore) {
+      return
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void loadMoreTopics()
+      }
+    }, { rootMargin: '240px 0px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [nextCursor, loading, loadingMore, selectedCategory, topics.length])
+
+  useEffect(() => {
+    const node = revealMoreRef.current
+    if (!node || visibleCount >= topics.length) {
+      return
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVisibleCount((prev) => Math.min(prev + VISIBLE_TOPICS_STEP, topics.length))
+      }
+    }, { rootMargin: '280px 0px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [topics.length, visibleCount])
+
   const loadTopics = async () => {
+    setLoading(true)
     try {
       const res = await topicsApi.list({
         category: selectedCategory === 'all' ? undefined : selectedCategory,
+        limit: PAGE_SIZE,
       })
-      setTopics(res.data)
+      setTopics(res.data.items)
+      setVisibleCount(INITIAL_VISIBLE_TOPICS)
+      setNextCursor(res.data.next_cursor)
     } catch (err) {
-      if (loading) {
-        handleApiError(err, '加载话题列表失败')
-      }
+      handleApiError(err, '加载话题列表失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadMoreTopics = async () => {
+    if (!nextCursor || loadingMore) {
+      return
+    }
+    setLoadingMore(true)
+    try {
+      const res = await topicsApi.list({
+        category: selectedCategory === 'all' ? undefined : selectedCategory,
+        cursor: nextCursor,
+        limit: PAGE_SIZE,
+      })
+      setTopics((prev) => [...prev, ...res.data.items.filter((item) => !prev.some((existing) => existing.id === item.id))])
+      setNextCursor(res.data.next_cursor)
+    } catch (err) {
+      handleApiError(err, '加载更多话题失败')
+    } finally {
+      setLoadingMore(false)
     }
   }
 
@@ -64,7 +127,10 @@ export default function TopicList() {
     if (!confirmed) return
     try {
       await topicsApi.delete(topicId)
-      await loadTopics()
+      setTopics((prev) => prev.filter((topic) => topic.id !== topicId))
+      if (topics.length <= 1) {
+        void loadTopics()
+      }
     } catch (err) {
       handleApiError(err, '删除话题失败')
     }
@@ -196,7 +262,7 @@ export default function TopicList() {
         )}
 
         <div className="flex flex-col gap-4">
-          {topics.map((topic) => {
+          {topics.slice(0, visibleCount).map((topic) => {
             const canDeleteTopic = Boolean(currentUser && (currentUser.is_admin || (topic.creator_user_id != null && topic.creator_user_id === currentUser.id)))
             return (
               <TopicCard
@@ -213,6 +279,37 @@ export default function TopicList() {
             )
           })}
         </div>
+
+        {visibleCount < topics.length ? (
+          <div ref={revealMoreRef} className="py-6 text-center">
+            <button
+              type="button"
+              onClick={() => setVisibleCount((prev) => Math.min(prev + VISIBLE_TOPICS_STEP, topics.length))}
+              className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm text-gray-600 hover:border-gray-300 hover:text-black"
+            >
+              继续显示更多卡片
+            </button>
+          </div>
+        ) : null}
+
+        {!loading && (nextCursor || loadingMore) ? (
+          <div ref={loadMoreRef} className="py-8 text-center text-sm text-gray-500">
+            {loadingMore ? '加载更多话题中...' : '继续下滑加载更多'}
+          </div>
+        ) : null}
+
+        {!loading && nextCursor ? (
+          <div className="pb-6 text-center">
+            <button
+              type="button"
+              onClick={() => { void loadMoreTopics() }}
+              disabled={loadingMore}
+              className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 hover:border-gray-300 hover:text-black disabled:opacity-50"
+            >
+              {loadingMore ? '加载中...' : '加载更多'}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   )

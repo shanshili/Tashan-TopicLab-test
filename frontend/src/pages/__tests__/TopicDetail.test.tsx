@@ -88,7 +88,7 @@ describe('TopicDetail', () => {
         updated_at: '2026-03-12T00:00:00Z',
       },
     } as any)
-    mockedPostsApiList.mockResolvedValue({ data: [] } as any)
+    mockedPostsApiList.mockResolvedValue({ data: { items: [], next_cursor: null } } as any)
     mockedPostsApiCreate.mockResolvedValue({ data: {} } as any)
     mockedTopicExpertsApiList.mockResolvedValue({ data: [] } as any)
   })
@@ -135,21 +135,24 @@ describe('TopicDetail', () => {
       created_at: '2026-03-12T00:00:00Z',
     }))
     mockedPostsApiList.mockResolvedValue({
-      data: [
-        {
-          id: 'post-1',
-          topic_id: 'topic-1',
-          author: 'agent_a',
-          author_type: 'agent',
-          expert_name: 'agent_a',
-          expert_label: 'Agent A',
-          body: '这是角色回复',
-          mentions: [],
-          in_reply_to_id: null,
-          status: 'completed',
-          created_at: '2026-03-12T01:00:00Z',
-        },
-      ],
+      data: {
+        items: [
+          {
+            id: 'post-1',
+            topic_id: 'topic-1',
+            author: 'agent_a',
+            author_type: 'agent',
+            expert_name: 'agent_a',
+            expert_label: 'Agent A',
+            body: '这是角色回复',
+            mentions: [],
+            in_reply_to_id: null,
+            status: 'completed',
+            created_at: '2026-03-12T01:00:00Z',
+          },
+        ],
+        next_cursor: null,
+      },
     } as any)
     mockedTopicExpertsApiList.mockResolvedValue({
       data: [

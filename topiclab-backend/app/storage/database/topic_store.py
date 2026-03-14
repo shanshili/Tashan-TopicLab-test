@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import secrets
 from hashlib import sha256
+import time
 import uuid
 
 from sqlalchemy import bindparam, text
@@ -23,6 +25,8 @@ DEFAULT_TOPIC_EXPERT_NAMES = [
 ]
 
 DEFAULT_TOPIC_SKILL_IDS = ["image_generation"]
+READ_CACHE_TTL_SECONDS = 5.0
+_read_cache: dict[tuple[object, ...], tuple[float, object]] = {}
 DEFAULT_MODERATOR_MODE = {
     "mode_id": "standard",
     "num_rounds": 5,
@@ -80,6 +84,36 @@ def _json_loads(value, default):
     if isinstance(value, (list, dict)):
         return value
     return json.loads(value)
+
+
+def _cache_get(key: tuple[object, ...]):
+    entry = _read_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if expires_at <= time.time():
+        _read_cache.pop(key, None)
+        return None
+    return copy.deepcopy(value)
+
+
+def _cache_set(key: tuple[object, ...], value) -> None:
+    _read_cache[key] = (time.time() + READ_CACHE_TTL_SECONDS, copy.deepcopy(value))
+
+
+def _invalidate_read_cache(*, topic_id: str | None = None, invalidate_topic_lists: bool = False) -> None:
+    keys_to_delete: list[tuple[object, ...]] = []
+    for key in list(_read_cache.keys()):
+        namespace = key[0] if key else None
+        if invalidate_topic_lists and namespace == "topics":
+            keys_to_delete.append(key)
+            continue
+        if topic_id is None:
+            continue
+        if namespace in {"topic", "posts", "post_replies", "post_thread", "post", "posts_all"} and len(key) > 1 and key[1] == topic_id:
+            keys_to_delete.append(key)
+    for key in keys_to_delete:
+        _read_cache.pop(key, None)
 
 
 def init_topic_tables() -> None:
@@ -612,6 +646,7 @@ def create_topic(
             session=session,
         )
         set_topic_moderator_config(topic_id, DEFAULT_MODERATOR_MODE, session=session)
+    _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     return get_topic(topic_id)
 
 
@@ -660,8 +695,8 @@ def annotate_topics_with_interactions(
         interaction["shares_count"] = int(interaction.get("shares_count") or item.get("shares_count") or 0)
         item["interaction"] = interaction
 
-    with get_db_session() as session:
-        if user_id is not None and auth_type:
+    if user_id is not None and auth_type:
+        with get_db_session() as session:
             state_rows = session.execute(
                 text("""
                     SELECT topic_id, liked, favorited
@@ -672,10 +707,10 @@ def annotate_topics_with_interactions(
                 """).bindparams(bindparam("topic_ids", expanding=True)),
                 {"topic_ids": topic_ids, "user_id": user_id, "auth_type": auth_type},
             ).fetchall()
-            for row in state_rows:
-                interaction = topic_map[row.topic_id]["interaction"]
-                interaction["liked"] = bool(row.liked)
-                interaction["favorited"] = bool(row.favorited)
+        for row in state_rows:
+            interaction = topic_map[row.topic_id]["interaction"]
+            interaction["liked"] = bool(row.liked)
+            interaction["favorited"] = bool(row.favorited)
     return topics
 
 
@@ -695,8 +730,8 @@ def annotate_posts_with_interactions(
         interaction["shares_count"] = int(interaction.get("shares_count") or item.get("shares_count") or 0)
         item["interaction"] = interaction
 
-    with get_db_session() as session:
-        if user_id is not None and auth_type:
+    if user_id is not None and auth_type:
+        with get_db_session() as session:
             state_rows = session.execute(
                 text("""
                     SELECT post_id, liked
@@ -707,8 +742,8 @@ def annotate_posts_with_interactions(
                 """).bindparams(bindparam("post_ids", expanding=True)),
                 {"post_ids": post_ids, "user_id": user_id, "auth_type": auth_type},
             ).fetchall()
-            for row in state_rows:
-                post_map[row.post_id]["interaction"]["liked"] = bool(row.liked)
+        for row in state_rows:
+            post_map[row.post_id]["interaction"]["liked"] = bool(row.liked)
     return posts
 
 
@@ -734,13 +769,14 @@ def annotate_source_articles_with_interactions(
             """).bindparams(bindparam("article_ids", expanding=True)),
             {"article_ids": article_ids},
         ).fetchall()
-        for row in stat_rows:
-            interaction = article_map[int(row.article_id)]["interaction"]
-            interaction["likes_count"] = int(row.likes_count or 0)
-            interaction["favorites_count"] = int(row.favorites_count or 0)
-            interaction["shares_count"] = int(row.shares_count or 0)
+    for row in stat_rows:
+        interaction = article_map[int(row.article_id)]["interaction"]
+        interaction["likes_count"] = int(row.likes_count or 0)
+        interaction["favorites_count"] = int(row.favorites_count or 0)
+        interaction["shares_count"] = int(row.shares_count or 0)
 
-        if user_id is not None and auth_type:
+    if user_id is not None and auth_type:
+        with get_db_session() as session:
             state_rows = session.execute(
                 text("""
                     SELECT article_id, liked, favorited
@@ -751,51 +787,87 @@ def annotate_source_articles_with_interactions(
                 """).bindparams(bindparam("article_ids", expanding=True)),
                 {"article_ids": article_ids, "user_id": user_id, "auth_type": auth_type},
             ).fetchall()
-            for row in state_rows:
-                interaction = article_map[int(row.article_id)]["interaction"]
-                interaction["liked"] = bool(row.liked)
-                interaction["favorited"] = bool(row.favorited)
+        for row in state_rows:
+            interaction = article_map[int(row.article_id)]["interaction"]
+            interaction["liked"] = bool(row.liked)
+            interaction["favorited"] = bool(row.favorited)
     return articles
 
 
 def list_topics(
     category: str | None = None,
     *,
+    cursor: str | None = None,
+    limit: int = 20,
     user_id: int | None = None,
     auth_type: str | None = None,
-) -> list[dict]:
-    with get_db_session() as session:
+) -> dict:
+    page_limit = max(1, min(limit, 100))
+    cache_key = ("topics", category or "*", cursor or "", page_limit)
+    payload = _cache_get(cache_key)
+    if payload is None:
+        cursor_tuple = _decode_cursor(cursor)
+        params: dict[str, object] = {"limit": page_limit + 1}
+        cursor_clause = ""
         if category:
-            rows = session.execute(text("""
-                SELECT
-                    t.*,
-                    r.status AS run_status,
-                    r.turns_count,
-                    r.cost_usd,
-                    r.completed_at,
-                    r.discussion_summary,
-                    r.discussion_history
-                FROM topics t
-                LEFT JOIN discussion_runs r ON r.topic_id = t.id
-                WHERE t.category = :category
-                ORDER BY t.updated_at DESC
-            """), {"category": category}).fetchall()
-        else:
-            rows = session.execute(text("""
-                SELECT
-                    t.*,
-                    r.status AS run_status,
-                    r.turns_count,
-                    r.cost_usd,
-                    r.completed_at,
-                    r.discussion_summary,
-                    r.discussion_history
-                FROM topics t
-                LEFT JOIN discussion_runs r ON r.topic_id = t.id
-                ORDER BY t.updated_at DESC
-            """)).fetchall()
-    topics = [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
-    return annotate_topics_with_interactions(topics, user_id=user_id, auth_type=auth_type)
+            params["category"] = category
+        if cursor_tuple:
+            params["cursor_updated_at"] = cursor_tuple[0]
+            params["cursor_id"] = cursor_tuple[1]
+            cursor_clause = """
+              AND (
+                    t.updated_at < :cursor_updated_at
+                    OR (t.updated_at = :cursor_updated_at AND t.id < :cursor_id)
+              )
+            """
+        with get_db_session() as session:
+            if category:
+                rows = session.execute(text(f"""
+                    SELECT
+                        t.*,
+                        r.status AS run_status,
+                        r.turns_count,
+                        r.cost_usd,
+                        r.completed_at,
+                        r.discussion_summary,
+                        r.discussion_history
+                    FROM topics t
+                    LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                    WHERE t.category = :category
+                    {cursor_clause}
+                    ORDER BY t.updated_at DESC, t.id DESC
+                    LIMIT :limit
+                """), params).fetchall()
+            else:
+                rows = session.execute(text(f"""
+                    SELECT
+                        t.*,
+                        r.status AS run_status,
+                        r.turns_count,
+                        r.cost_usd,
+                        r.completed_at,
+                        r.discussion_summary,
+                        r.discussion_history
+                    FROM topics t
+                    LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                    WHERE 1 = 1
+                    {cursor_clause}
+                    ORDER BY t.updated_at DESC, t.id DESC
+                    LIMIT :limit
+                """), params).fetchall()
+        topics = [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
+        has_more = len(topics) > page_limit
+        topics = topics[:page_limit]
+        next_cursor = None
+        if has_more and topics:
+            last = topics[-1]
+            next_cursor = _encode_cursor(last["updated_at"], last["id"])
+        payload = {"items": topics, "next_cursor": next_cursor}
+        _cache_set(cache_key, payload)
+    return {
+        "items": annotate_topics_with_interactions(payload["items"], user_id=user_id, auth_type=auth_type),
+        "next_cursor": payload["next_cursor"],
+    }
 
 
 def get_topic(
@@ -804,26 +876,30 @@ def get_topic(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> dict | None:
-    with get_db_session() as session:
-        row = session.execute(
-            text("""
-                SELECT
-                    t.*,
-                    r.status AS run_status,
-                    r.turns_count,
-                    r.cost_usd,
-                    r.completed_at,
-                    r.discussion_summary,
-                    r.discussion_history
-                FROM topics t
-                LEFT JOIN discussion_runs r ON r.topic_id = t.id
-                WHERE t.id = :topic_id
-            """),
-            {"topic_id": topic_id},
-        ).fetchone()
-    if not row:
-        return None
-    topic = topic_record_to_dict(_build_topic(row))
+    cache_key = ("topic", topic_id)
+    topic = _cache_get(cache_key)
+    if topic is None:
+        with get_db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT
+                        t.*,
+                        r.status AS run_status,
+                        r.turns_count,
+                        r.cost_usd,
+                        r.completed_at,
+                        r.discussion_summary,
+                        r.discussion_history
+                    FROM topics t
+                    LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                    WHERE t.id = :topic_id
+                """),
+                {"topic_id": topic_id},
+            ).fetchone()
+        if not row:
+            return None
+        topic = topic_record_to_dict(_build_topic(row))
+        _cache_set(cache_key, topic)
     annotate_topics_with_interactions([topic], user_id=user_id, auth_type=auth_type)
     return topic
 
@@ -857,6 +933,7 @@ def update_topic(topic_id: str, data: dict) -> dict | None:
         )
         if result.rowcount == 0:
             return None
+    _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     return get_topic(topic_id)
 
 
@@ -870,6 +947,8 @@ def delete_topic(topic_id: str) -> bool:
             text("DELETE FROM topics WHERE id = :topic_id"),
             {"topic_id": topic_id},
         )
+    if result.rowcount:
+        _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     return bool(result.rowcount)
 
 
@@ -917,6 +996,7 @@ def set_discussion_status(topic_id: str, status: str, *, turns_count: int | None
                 "discussion_history": discussion_history or "",
             },
         )
+    _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     return get_topic(topic_id)
 
 
@@ -949,16 +1029,20 @@ def list_all_posts(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> list[dict]:
-    with get_db_session() as session:
-        rows = session.execute(
-            text("""
-                SELECT * FROM posts
-                WHERE topic_id = :topic_id
-                ORDER BY created_at ASC, id ASC
-            """),
-            {"topic_id": topic_id},
-        ).fetchall()
-    posts = [post_row_to_dict(row) for row in rows]
+    cache_key = ("posts_all", topic_id)
+    posts = _cache_get(cache_key)
+    if posts is None:
+        with get_db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT * FROM posts
+                    WHERE topic_id = :topic_id
+                    ORDER BY created_at ASC, id ASC
+                """),
+                {"topic_id": topic_id},
+            ).fetchall()
+        posts = [post_row_to_dict(row) for row in rows]
+        _cache_set(cache_key, posts)
     return annotate_posts_with_interactions(posts, user_id=user_id, auth_type=auth_type)
 
 
@@ -1011,6 +1095,13 @@ def list_posts(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> dict:
+    cache_key = ("posts", topic_id, cursor or "", max(1, min(limit, 100)), preview_replies)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return {
+            "items": annotate_posts_with_interactions(cached["items"], user_id=user_id, auth_type=auth_type),
+            "next_cursor": cached["next_cursor"],
+        }
     cursor_tuple = _decode_cursor(cursor)
     params: dict[str, object] = {
         "topic_id": topic_id,
@@ -1060,7 +1151,9 @@ def list_posts(
     if has_more and posts:
         last = posts[-1]
         next_cursor = _encode_cursor(last["created_at"], last["id"])
-    return {"items": posts, "next_cursor": next_cursor}
+    payload = {"items": posts, "next_cursor": next_cursor}
+    _cache_set(cache_key, payload)
+    return payload
 
 
 def list_post_replies(
@@ -1072,6 +1165,14 @@ def list_post_replies(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> dict:
+    cache_key = ("post_replies", topic_id, post_id, cursor or "", max(1, min(limit, 100)))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return {
+            "items": annotate_posts_with_interactions(cached["items"], user_id=user_id, auth_type=auth_type),
+            "parent_post_id": cached["parent_post_id"],
+            "next_cursor": cached["next_cursor"],
+        }
     cursor_tuple = _decode_cursor(cursor)
     params: dict[str, object] = {
         "topic_id": topic_id,
@@ -1111,7 +1212,9 @@ def list_post_replies(
     if has_more and posts:
         last = posts[-1]
         next_cursor = _encode_cursor(last["created_at"], last["id"])
-    return {"items": posts, "parent_post_id": post_id, "next_cursor": next_cursor}
+    payload = {"items": posts, "parent_post_id": post_id, "next_cursor": next_cursor}
+    _cache_set(cache_key, payload)
+    return payload
 
 
 def get_post_thread(
@@ -1121,28 +1224,32 @@ def get_post_thread(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> list[dict]:
-    with get_db_session() as session:
-        rows = session.execute(
-            text(
-                """
-                WITH RECURSIVE thread AS (
+    cache_key = ("post_thread", topic_id, post_id)
+    posts = _cache_get(cache_key)
+    if posts is None:
+        with get_db_session() as session:
+            rows = session.execute(
+                text(
+                    """
+                    WITH RECURSIVE thread AS (
+                        SELECT *
+                        FROM posts
+                        WHERE topic_id = :topic_id AND id = :post_id
+                        UNION ALL
+                        SELECT child.*
+                        FROM posts child
+                        JOIN thread parent ON child.in_reply_to_id = parent.id
+                        WHERE child.topic_id = :topic_id
+                    )
                     SELECT *
-                    FROM posts
-                    WHERE topic_id = :topic_id AND id = :post_id
-                    UNION ALL
-                    SELECT child.*
-                    FROM posts child
-                    JOIN thread parent ON child.in_reply_to_id = parent.id
-                    WHERE child.topic_id = :topic_id
-                )
-                SELECT *
-                FROM thread
-                ORDER BY created_at ASC, id ASC
-                """
-            ),
-            {"topic_id": topic_id, "post_id": post_id},
-        ).fetchall()
-    posts = [post_row_to_dict(row) for row in rows]
+                    FROM thread
+                    ORDER BY created_at ASC, id ASC
+                    """
+                ),
+                {"topic_id": topic_id, "post_id": post_id},
+            ).fetchall()
+        posts = [post_row_to_dict(row) for row in rows]
+        _cache_set(cache_key, posts)
     return annotate_posts_with_interactions(posts, user_id=user_id, auth_type=auth_type)
 
 
@@ -1153,14 +1260,18 @@ def get_post(
     user_id: int | None = None,
     auth_type: str | None = None,
 ) -> dict | None:
-    with get_db_session() as session:
-        row = session.execute(
-            text("SELECT * FROM posts WHERE topic_id = :topic_id AND id = :post_id"),
-            {"topic_id": topic_id, "post_id": post_id},
-        ).fetchone()
-    if not row:
-        return None
-    post = post_row_to_dict(row)
+    cache_key = ("post", topic_id, post_id)
+    post = _cache_get(cache_key)
+    if post is None:
+        with get_db_session() as session:
+            row = session.execute(
+                text("SELECT * FROM posts WHERE topic_id = :topic_id AND id = :post_id"),
+                {"topic_id": topic_id, "post_id": post_id},
+            ).fetchone()
+        if not row:
+            return None
+        post = post_row_to_dict(row)
+        _cache_set(cache_key, post)
     annotate_posts_with_interactions([post], user_id=user_id, auth_type=auth_type)
     return post
 
@@ -1242,6 +1353,7 @@ def upsert_post(post: dict) -> dict:
                     """),
                     {"post_id": post["in_reply_to_id"]},
                 )
+    _invalidate_read_cache(topic_id=post["topic_id"], invalidate_topic_lists=True)
     return get_post(post["topic_id"], post["id"])
 
 
@@ -1310,6 +1422,7 @@ def replace_discussion_turns(topic_id: str, turns: list[dict]) -> None:
                     "updated_at": turn.get("updated_at") or now,
                 },
             )
+    _invalidate_read_cache(topic_id=topic_id)
 
 
 def list_discussion_turns(topic_id: str) -> list[dict]:
@@ -1432,6 +1545,7 @@ def replace_topic_experts(topic_id: str, experts: list[dict], *, session=None) -
         )
         if owns_session:
             ctx.__exit__(None, None, None)
+            _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     except Exception as exc:
         if owns_session:
             ctx.__exit__(type(exc), exc, exc.__traceback__)
@@ -1514,6 +1628,7 @@ def set_topic_moderator_config(topic_id: str, config: dict, *, session=None) -> 
         )
         if owns_session:
             ctx.__exit__(None, None, None)
+            _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     except Exception as exc:
         if owns_session:
             ctx.__exit__(type(exc), exc, exc.__traceback__)
@@ -1685,6 +1800,8 @@ def delete_post(topic_id: str, post_id: str) -> int:
                     """),
                     {"parent_post_id": parent_row.in_reply_to_id},
                 )
+    if deleted_count > 0:
+        _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     return int(result.rowcount or 0)
 
 
@@ -1903,6 +2020,7 @@ def set_topic_user_action(
     if not resolved_favorited:
         _remove_topic_from_all_favorite_categories(topic_id, user_id=user_id, auth_type=auth_type)
     _cleanup_topic_user_action(topic_id, user_id, auth_type)
+    _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if topic is None:
         raise KeyError(topic_id)
@@ -1960,6 +2078,7 @@ def set_post_user_action(
                 """),
                 {"post_id": post_id, "delta": 1 if liked else -1},
             )
+    _invalidate_read_cache(topic_id=topic_id)
     _cleanup_post_user_action(post_id, user_id, auth_type)
     post = get_post(topic_id, post_id, user_id=user_id, auth_type=auth_type)
     if post is None:
@@ -2099,6 +2218,7 @@ def record_topic_share(topic_id: str, *, user_id: int | None = None, auth_type: 
             """),
             {"topic_id": topic_id, "updated_at": utc_now()},
         )
+    _invalidate_read_cache(topic_id=topic_id, invalidate_topic_lists=True)
     topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if topic is None:
         raise KeyError(topic_id)
@@ -2135,6 +2255,7 @@ def record_post_share(
             """),
             {"post_id": post_id},
         )
+    _invalidate_read_cache(topic_id=topic_id)
     post = get_post(topic_id, post_id, user_id=user_id, auth_type=auth_type)
     if post is None:
         raise KeyError(post_id)

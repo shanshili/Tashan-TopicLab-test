@@ -223,6 +223,11 @@ export interface FavoriteCategoryItemsPage {
   next_cursor: string | null
 }
 
+export interface TopicListPage {
+  items: TopicListItem[]
+  next_cursor: string | null
+}
+
 export interface ToggleActionRequest {
   enabled: boolean
 }
@@ -321,11 +326,13 @@ export interface DiscussionStatusResponse {
 }
 
 export const topicsApi = {
-  list: (params?: { category?: string }) => {
+  list: (params?: { category?: string; cursor?: string | null; limit?: number }) => {
     const searchParams = new URLSearchParams()
     if (params?.category) searchParams.set('category', params.category)
+    if (params?.cursor) searchParams.set('cursor', params.cursor)
+    if (params?.limit != null) searchParams.set('limit', String(params.limit))
     const qs = searchParams.toString()
-    return api.get<TopicListItem[]>(`/topics${qs ? `?${qs}` : ''}`)
+    return api.get<TopicListPage>(`/topics${qs ? `?${qs}` : ''}`)
   },
   get: (id: string) => api.get<Topic>(`/topics/${id}`),
   getBundle: (id: string) => api.get<TopicBundleResponse>(`/topics/${id}/bundle`),

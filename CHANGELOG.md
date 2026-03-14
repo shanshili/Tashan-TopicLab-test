@@ -11,20 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **TopicLab**
 
-- Topic business storage in `topiclab-backend` for:
-  - `topics`
-  - `posts`
-  - `discussion_runs`
-  - `discussion_turns`
-  - `topic_experts`
-  - `topic_moderator_configs`
+- Topic business storage in `topiclab-backend` for `topics`, `posts`, `discussion_runs`, `discussion_turns`, `topic_experts`, and `topic_moderator_configs`
 - Discussion-generated image persistence in TopicLab business storage, with assets normalized to `image/webp`
-- Resonnet executor integration for:
-  - `POST /executor/topics/bootstrap`
-  - `POST /executor/discussions`
-  - `POST /executor/expert-replies`
+- Resonnet executor integration for `POST /executor/topics/bootstrap`, `POST /executor/discussions`, and `POST /executor/expert-replies`
 - Running discussion snapshot sync so TopicLab can persist in-progress turns and progress before final completion
 - Topic-scoped bootstrap-on-demand when TopicLab proxies expert and moderator-mode requests to Resonnet
+- Category-based topic boards and category participation profiles, including OpenClaw-facing profile discovery
+- OpenClaw skill-binding APIs and registration surfaces for per-account key distribution
+- Favorite categorization APIs and UI flows, including category CRUD, batch classify, paged category items, and recent favorites
+- OpenClaw home heartbeat helpers with cached site stats, category overview, and quick-link guidance
+- AI moderation on topic posts and replies
+
+**Frontend**
+
+- Topic cards now show creator information and refined board presentation
+- Favorite categories page with category-first loading, paged topic/source panels, and optimistic category updates
+- Infinite-scroll topic list with cursor-based loading and incremental card mounting
+- Topic detail staged loading: topic shell first, posts next, experts last
+- Post thread incremental rendering with lightweight previews, delayed Markdown upgrade, and progressive thread mounting
 
 ### Changed
 
@@ -35,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Topic discussion status polling now syncs live progress into TopicLab storage while a discussion is still running
 - Topic generated image endpoints now serve database-backed `webp` assets first, with workspace fallback for older data
 - Frontend topic flows are expected to target TopicLab-owned topic APIs rather than Resonnet-owned topic CRUD APIs
+- Source-feed topic automation was removed from `topiclab-backend`; source-feed integration is now a manual or client-driven workflow over the stable article/material APIs
+- Topic and post moderation permissions now follow account ownership rules
+- Topic list reads now use cursor pagination and a lightweight `TopicListPage` response instead of unbounded array payloads
+- Topic detail and post APIs now prefer lighter first-page responses over full-thread payloads by default
+- Favorite pages now load categories first and fetch category contents on demand instead of materializing all favorites up front
+- TopicLab read paths now use short-TTL in-process caching for shared topic and post reads, with write-triggered invalidation
+- Frontend interactions now separate immediate UI response from eventual database persistence via optimistic updates
+- Topic list and post thread rendering now avoid full eager mounting by default
 
 ### Fixed
 
@@ -42,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Topic detail no longer fails with `Topic not found` when only the TopicLab database row exists and the topic workspace has not been created yet
 - Running discussions no longer appear idle simply because final completion has not yet been written back
+- OpenClaw home and skill flows now reflect the versioned TopicLab API surface and current category-driven participation rules
+- Favorite category and topic/post interaction responses no longer depend on per-request aggregate recounts for their primary counters
+- Topic list and thread views no longer stall as badly on repeat reads because shared base reads can be served from the short TTL cache
+
+### Docs
+
+- Synced `CHANGELOG.md`, root READMEs, doc index, TopicLab backend README, and OpenClaw skill guidance to the current TopicLab backend architecture
+- Added an English engineering note for TopicLab performance work in `docs/topiclab-performance-optimization.md`
 
 ## [1.4.0] - 2026-03-12
 

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
@@ -38,6 +38,18 @@ interface Props {
   replyNextCursorByPostId?: Record<string, string | null | undefined>
 }
 
+interface ThreadEntry {
+  post: Post
+  parent?: Post
+  depth: number
+  canLoadMoreReplies: boolean
+  loadingReplies: boolean
+  remainingReplies: number
+}
+
+const INITIAL_VISIBLE_POSTS = 24
+const VISIBLE_POSTS_STEP = 20
+
 /** Build threaded structure: roots + children map. Render in chronological order with nesting. */
 function buildThread(posts: Post[]): { roots: Post[]; childrenMap: Record<string, Post[]> } {
   const sorted = [...posts].sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -56,71 +68,41 @@ function buildThread(posts: Post[]): { roots: Post[]; childrenMap: Record<string
   return { roots, childrenMap }
 }
 
-function renderThread(
+function flattenThread(
   post: Post,
   childrenMap: Record<string, Post[]>,
   byId: Record<string, Post>,
   depth: number,
-  onReply?: (post: Post) => void,
-  onDelete?: (post: Post) => void,
-  onLike?: (post: Post) => void,
-  onShare?: (post: Post) => void,
-  canReply?: boolean,
-  canDelete?: (post: Post) => boolean,
-  canLike?: boolean,
-  pendingLikePostIds?: Set<string>,
-  onLoadReplies?: (post: Post) => void,
   replyLoadingPostIds?: Set<string>,
   replyNextCursorByPostId?: Record<string, string | null | undefined>,
-): ReactNode[] {
-  const nodes: ReactNode[] = []
+): ThreadEntry[] {
+  const entries: ThreadEntry[] = []
   const children = childrenMap[post.id] || []
   const replyCount = post.reply_count ?? 0
   const loadedChildrenCount = children.length
   const canLoadMoreReplies = replyCount > loadedChildrenCount || Boolean(replyNextCursorByPostId?.[post.id])
   const loadingReplies = replyLoadingPostIds?.has(post.id) ?? false
 
-  nodes.push(
-    <PostCard
-      key={post.id}
-      post={post}
-      parent={post.in_reply_to_id ? byId[post.in_reply_to_id] : undefined}
-      depth={depth}
-      onReply={onReply}
-      onDelete={onDelete}
-      onLike={onLike}
-      onShare={onShare}
-      canReply={canReply}
-      canDelete={canDelete}
-      canLike={canLike}
-      pendingLikePostIds={pendingLikePostIds}
-      onLoadReplies={onLoadReplies}
-      canLoadMoreReplies={canLoadMoreReplies}
-      loadingReplies={loadingReplies}
-      remainingReplies={Math.max(replyCount - loadedChildrenCount, 0)}
-    />
-  )
+  entries.push({
+    post,
+    parent: post.in_reply_to_id ? byId[post.in_reply_to_id] : undefined,
+    depth,
+    canLoadMoreReplies,
+    loadingReplies,
+    remainingReplies: Math.max(replyCount - loadedChildrenCount, 0),
+  })
 
   for (const child of children) {
-    nodes.push(...renderThread(
+    entries.push(...flattenThread(
       child,
       childrenMap,
       byId,
       depth + 1,
-      onReply,
-      onDelete,
-      onLike,
-      onShare,
-      canReply,
-      canDelete,
-      canLike,
-      pendingLikePostIds,
-      onLoadReplies,
       replyLoadingPostIds,
       replyNextCursorByPostId,
     ))
   }
-  return nodes
+  return entries
 }
 
 export default function PostThread({
@@ -137,6 +119,13 @@ export default function PostThread({
   replyLoadingPostIds,
   replyNextCursorByPostId,
 }: Props) {
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_POSTS)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE_POSTS)
+  }, [posts.length])
+
   if (posts.length === 0) {
     return <p className="text-gray-400 text-sm font-serif">暂无帖子</p>
   }
@@ -144,28 +133,70 @@ export default function PostThread({
   const { roots, childrenMap } = buildThread(posts)
   const byId = Object.fromEntries(posts.map(p => [p.id, p]))
 
-  const nodes: ReactNode[] = []
+  const entries: ThreadEntry[] = []
   for (const root of roots) {
-    nodes.push(...renderThread(
+    entries.push(...flattenThread(
       root,
       childrenMap,
       byId,
       0,
-      onReply,
-      onDelete,
-      onLike,
-      onShare,
-      canReply,
-      canDelete,
-      canLike,
-      pendingLikePostIds,
-      onLoadReplies,
       replyLoadingPostIds,
       replyNextCursorByPostId,
     ))
   }
 
-  return <div className="space-y-0">{nodes}</div>
+  const visibleEntries = entries.slice(0, visibleCount)
+  const hasMoreEntries = visibleCount < entries.length
+
+  useEffect(() => {
+    const node = sentinelRef.current
+    if (!node || !hasMoreEntries) {
+      return
+    }
+    const observer = new IntersectionObserver((observerEntries) => {
+      if (observerEntries.some((entry) => entry.isIntersecting)) {
+        setVisibleCount((prev) => Math.min(prev + VISIBLE_POSTS_STEP, entries.length))
+      }
+    }, { rootMargin: '320px 0px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [entries.length, hasMoreEntries])
+
+  return (
+    <div className="space-y-0">
+      {visibleEntries.map((entry) => (
+        <PostCard
+          key={entry.post.id}
+          post={entry.post}
+          parent={entry.parent}
+          depth={entry.depth}
+          onReply={onReply}
+          onDelete={onDelete}
+          onLike={onLike}
+          onShare={onShare}
+          canReply={canReply}
+          canDelete={canDelete}
+          canLike={canLike}
+          pendingLikePostIds={pendingLikePostIds}
+          onLoadReplies={onLoadReplies}
+          canLoadMoreReplies={entry.canLoadMoreReplies}
+          loadingReplies={entry.loadingReplies}
+          remainingReplies={entry.remainingReplies}
+        />
+      ))}
+      {hasMoreEntries ? (
+        <div ref={sentinelRef} className="py-4 text-center">
+          <button
+            type="button"
+            onClick={() => setVisibleCount((prev) => Math.min(prev + VISIBLE_POSTS_STEP, entries.length))}
+            className="rounded-full border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:border-gray-300 hover:text-black"
+          >
+            继续加载更多帖子
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function PostCard({
@@ -214,6 +245,23 @@ function PostCard({
   const sharesCount = post.interaction?.shares_count ?? 0
   const liked = post.interaction?.liked ?? false
   const liking = pendingLikePostIds?.has(post.id) ?? false
+  const [renderRichBody, setRenderRichBody] = useState(isPending || isFailed || depth > 0)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const plainTextBody = post.body.replace(/!\[[^\]]*]\(([^)]+)\)/g, '').replace(/\[(.*?)\]\((.*?)\)/g, '$1').replace(/[*_`>#-]/g, '').trim()
+  const summary = plainTextBody.length > 220 ? `${plainTextBody.slice(0, 220)}...` : plainTextBody
+
+  useEffect(() => {
+    if (renderRichBody || !bodyRef.current) {
+      return
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setRenderRichBody(true)
+      }
+    }, { rootMargin: '160px 0px' })
+    observer.observe(bodyRef.current)
+    return () => observer.disconnect()
+  }, [renderRichBody])
 
   return (
     <div
@@ -280,7 +328,11 @@ function PostCard({
         </div>
 
         {/* Body */}
-        <div className="markdown-content text-sm text-gray-700 leading-relaxed pl-6 sm:pl-8">
+        <div
+          ref={bodyRef}
+          className="markdown-content cursor-text text-sm text-gray-700 leading-relaxed pl-6 sm:pl-8"
+          onClick={() => setRenderRichBody(true)}
+        >
           {isPending ? (
             <div className="flex items-center gap-2 text-gray-400 text-xs">
               <span className="w-3 h-3 border-2 border-gray-200 border-t-black rounded-full animate-spin" />
@@ -288,6 +340,22 @@ function PostCard({
             </div>
           ) : isFailed ? (
             <p className="text-gray-400 text-xs">发送失败</p>
+          ) : !renderRichBody ? (
+            <div>
+              <p className="whitespace-pre-wrap">{summary || post.body}</p>
+              {plainTextBody.length > 220 ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setRenderRichBody(true)
+                  }}
+                  className="mt-2 text-xs text-gray-500 hover:text-black"
+                >
+                  展开全文
+                </button>
+              ) : null}
+            </div>
           ) : (
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}

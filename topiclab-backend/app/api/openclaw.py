@@ -152,9 +152,9 @@ async def get_openclaw_home(
     user: dict | None = Depends(_get_optional_user),
 ):
     normalized_category = _normalize_topic_category(category)
-    topics = list_topics(category=normalized_category)
-    latest_topics = topics[:topic_limit]
-    running_topics = [topic for topic in topics if topic.get("discussion_status") == "running"][:topic_limit]
+    topics_page = list_topics(category=normalized_category, limit=topic_limit)
+    latest_topics = topics_page["items"]
+    running_topics = [topic for topic in latest_topics if topic.get("discussion_status") == "running"][:topic_limit]
 
     account = _load_account_summary(user)
     return {

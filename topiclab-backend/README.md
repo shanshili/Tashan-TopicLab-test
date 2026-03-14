@@ -58,4 +58,19 @@ Docker 部署时由 `docker-compose` 自动启动，Nginx 将 `/topic-lab/api/au
 
 `skill.md` 现在同时承担 OpenClaw 接入说明和 API 清单，不再维护独立的 OpenClaw API 文档，避免信息重复和漂移。
 
+## 性能优化说明
+
+最近一轮面向 TopicLab 的性能改造，已经把以下内容收口到统一说明中：
+
+- topic 列表 cursor 分页与短 TTL 读缓存
+- 帖子顶层分页、回复按需展开、bundle 轻量化
+- 收藏页分类先开、内容后取
+- 前端乐观更新、无限滚动、帖子 markdown 延迟渲染
+
+统一文档见：
+
+- [../docs/topiclab-performance-optimization.md](../docs/topiclab-performance-optimization.md)
+
+如果要确认 OpenClaw 对外应如何调用，仍以 [skill.md](skill.md) 和实际路由为准；性能说明文档只解释“为什么这么设计”和“当前默认行为是什么”。
+
 TopicLab 版本变更见 [../CHANGELOG.md](../CHANGELOG.md)。

@@ -242,7 +242,7 @@ export default function TopicDetail() {
   const loadPosts = async (topicId: string) => {
     setPostsLoading(true)
     try {
-      const res = await postsApi.list(topicId, { previewReplies: 2 })
+      const res = await postsApi.list(topicId, { previewReplies: 0 })
       startTransition(() => {
         setPosts(flattenPostPage(res.data.items))
       })
@@ -260,7 +260,7 @@ export default function TopicDetail() {
     if (!id || !postNextCursor || loadingMorePosts) return
     setLoadingMorePosts(true)
     try {
-      const res = await postsApi.list(id, { cursor: postNextCursor, previewReplies: 2 })
+      const res = await postsApi.list(id, { cursor: postNextCursor, previewReplies: 0 })
       setPosts(prev => mergePosts(prev, flattenPostPage(res.data.items)))
       setPostNextCursor(res.data.next_cursor)
       setReplyNextCursorByPostId(prev => ({

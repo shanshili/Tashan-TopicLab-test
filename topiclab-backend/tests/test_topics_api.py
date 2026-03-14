@@ -163,10 +163,10 @@ def test_topic_create_list_and_posts(client):
 
     list_resp = client.get("/topics")
     assert list_resp.status_code == 200
-    assert any(item["id"] == topic_id for item in list_resp.json())
+    assert any(item["id"] == topic_id for item in list_resp.json()["items"])
     filtered = client.get("/topics?category=research")
     assert filtered.status_code == 200
-    assert filtered.json()[0]["id"] == topic_id
+    assert filtered.json()["items"][0]["id"] == topic_id
 
     post_resp = client.post(
         f"/topics/{topic_id}/posts",
@@ -729,6 +729,31 @@ def test_posts_pagination_and_reply_thread_endpoints(client):
     assert len(thread.json()["items"]) == 3
 
 
+def test_topics_list_supports_cursor_pagination(client):
+    first = client.post("/topics", json={"title": "列表一", "body": "正文", "category": "research"})
+    second = client.post("/topics", json={"title": "列表二", "body": "正文", "category": "research"})
+    third = client.post("/topics", json={"title": "列表三", "body": "正文", "category": "product"})
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert third.status_code == 201
+
+    first_page = client.get("/topics?limit=2")
+    assert first_page.status_code == 200, first_page.text
+    first_payload = first_page.json()
+    assert len(first_payload["items"]) == 2
+    assert first_payload["next_cursor"]
+
+    second_page = client.get(f"/topics?limit=2&cursor={first_payload['next_cursor']}")
+    assert second_page.status_code == 200, second_page.text
+    second_payload = second_page.json()
+    assert len(second_payload["items"]) >= 1
+    assert not ({item["id"] for item in first_payload["items"]} & {item["id"] for item in second_payload["items"]})
+
+    research_page = client.get("/topics?category=research&limit=10")
+    assert research_page.status_code == 200, research_page.text
+    assert all(item["category"] == "research" for item in research_page.json()["items"])
+
+
 def test_favorite_category_items_and_recent_favorites_are_paged(client):
     user = register_and_login(client, phone="13800000011", username="favorite-user")
     headers = {"Authorization": f"Bearer {user['token']}"}
@@ -838,3 +863,64 @@ def test_write_time_interaction_counters_are_returned_directly(client):
     assert root_post["reply_count"] == 1
     assert root_post["interaction"]["likes_count"] == 1
     assert root_post["interaction"]["shares_count"] == 1
+
+
+def test_short_ttl_read_cache_hits_and_invalidates_on_write(client, monkeypatch):
+    from app.storage.database import topic_store
+
+    topic = client.post("/topics", json={"title": "缓存测试", "body": "正文"}).json()
+    topic_id = topic["id"]
+    first_post = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "alice", "body": "第一条帖子，用来验证缓存命中。"},
+    )
+    assert first_post.status_code == 201, first_post.text
+
+    original_get_db_session = topic_store.get_db_session
+    calls = {"count": 0}
+
+    class CountingSessionContext:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def __enter__(self):
+            calls["count"] += 1
+            return self._wrapped.__enter__()
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._wrapped.__exit__(exc_type, exc, tb)
+
+    def counting_get_db_session():
+        return CountingSessionContext(original_get_db_session())
+
+    monkeypatch.setattr(topic_store, "get_db_session", counting_get_db_session)
+
+    calls["count"] = 0
+    cached_topic_first = topic_store.get_topic(topic_id)
+    first_read_calls = calls["count"]
+    cached_topic_second = topic_store.get_topic(topic_id)
+    assert calls["count"] == first_read_calls
+    assert cached_topic_first["id"] == cached_topic_second["id"]
+
+    calls["count"] = 0
+    cached_posts_first = topic_store.list_posts(topic_id, preview_replies=2)
+    first_posts_read_calls = calls["count"]
+    cached_posts_second = topic_store.list_posts(topic_id, preview_replies=2)
+    assert calls["count"] == first_posts_read_calls
+    assert len(cached_posts_first["items"]) == len(cached_posts_second["items"]) == 1
+
+    second_post = client.post(
+        f"/topics/{topic_id}/posts",
+        json={"author": "bob", "body": "第二条帖子，用来触发写后失效。"},
+    )
+    assert second_post.status_code == 201, second_post.text
+
+    calls["count"] = 0
+    refreshed_topic = topic_store.get_topic(topic_id)
+    assert calls["count"] >= 1
+    assert refreshed_topic["posts_count"] == 2
+
+    calls["count"] = 0
+    refreshed_posts = topic_store.list_posts(topic_id, preview_replies=2)
+    assert calls["count"] >= 1
+    assert len(refreshed_posts["items"]) == 2

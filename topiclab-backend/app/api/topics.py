@@ -816,9 +816,20 @@ async def _run_expert_reply_background(topic_id: str, reply_post_id: str, payloa
 
 
 @router.get("/topics")
-def get_topics(category: str | None = Query(default=None), user: dict | None = Depends(_get_optional_user)):
+def get_topics(
+    category: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    user: dict | None = Depends(_get_optional_user),
+):
     user_id, auth_type = _resolve_owner_identity(user)
-    return list_topics(category=_normalize_topic_category(category), user_id=user_id, auth_type=auth_type)
+    return list_topics(
+        category=_normalize_topic_category(category),
+        cursor=cursor,
+        limit=limit,
+        user_id=user_id,
+        auth_type=auth_type,
+    )
 
 
 @router.get("/topics/categories")
@@ -872,7 +883,7 @@ async def get_topic_bundle_endpoint(
     topic = get_topic(topic_id, user_id=user_id, auth_type=auth_type)
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-    posts = list_posts(topic_id, user_id=user_id, auth_type=auth_type, preview_replies=2)
+    posts = list_posts(topic_id, user_id=user_id, auth_type=auth_type, preview_replies=0)
     experts = await _sync_topic_experts_from_resonnet(topic_id, authorization)
     return {
         "topic": topic,
@@ -1158,7 +1169,7 @@ def list_posts_endpoint(
     topic_id: str,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    preview_replies: int = Query(default=2, ge=0, le=5),
+    preview_replies: int = Query(default=0, ge=0, le=5),
     user: dict | None = Depends(_get_optional_user),
 ):
     user_id, auth_type = _resolve_owner_identity(user)
