@@ -176,6 +176,7 @@ def init_topic_tables() -> None:
             CREATE INDEX IF NOT EXISTS idx_topic_source_article_links_topic_id
             ON topic_source_article_links(topic_id)
         """))
+        session.execute(text("ALTER TABLE topic_source_article_links ADD COLUMN IF NOT EXISTS snapshot_pic_url TEXT"))
         session.execute(text("""
             CREATE TABLE IF NOT EXISTS posts (
                 id VARCHAR(36) PRIMARY KEY,
@@ -962,6 +963,7 @@ def link_source_article_to_topic(
     source_feed_name: str = "",
     source_type: str = "",
     url: str = "",
+    pic_url: str | None = None,
 ) -> str:
     now = utc_now()
     with get_db_session() as session:
@@ -974,6 +976,7 @@ def link_source_article_to_topic(
                     snapshot_source_feed_name,
                     snapshot_source_type,
                     snapshot_url,
+                    snapshot_pic_url,
                     created_at,
                     updated_at
                 ) VALUES (
@@ -983,10 +986,12 @@ def link_source_article_to_topic(
                     :snapshot_source_feed_name,
                     :snapshot_source_type,
                     :snapshot_url,
+                    :snapshot_pic_url,
                     :created_at,
                     :updated_at
                 )
                 ON CONFLICT (article_id) DO UPDATE SET
+                    snapshot_pic_url = COALESCE(EXCLUDED.snapshot_pic_url, topic_source_article_links.snapshot_pic_url),
                     updated_at = EXCLUDED.updated_at
                 RETURNING topic_id
             """),
@@ -997,11 +1002,29 @@ def link_source_article_to_topic(
                 "snapshot_source_feed_name": source_feed_name,
                 "snapshot_source_type": source_type,
                 "snapshot_url": url,
+                "snapshot_pic_url": pic_url,
                 "created_at": now,
                 "updated_at": now,
             },
         ).one()
     return str(row.topic_id)
+
+
+def get_source_pic_url_by_topic_ids(topic_ids: list[str]) -> dict[str, str]:
+    """Return mapping topic_id -> snapshot_pic_url for topics that have a linked source article with pic."""
+    if not topic_ids:
+        return {}
+    with get_db_session() as session:
+        rows = session.execute(
+            text("""
+                SELECT topic_id, snapshot_pic_url
+                FROM topic_source_article_links
+                WHERE topic_id IN :topic_ids
+                  AND snapshot_pic_url IS NOT NULL AND snapshot_pic_url != ''
+            """).bindparams(bindparam("topic_ids", expanding=True)),
+            {"topic_ids": topic_ids},
+        ).fetchall()
+    return {str(row.topic_id): str(row.snapshot_pic_url) for row in rows}
 
 
 def update_topic(topic_id: str, data: dict) -> dict | None:

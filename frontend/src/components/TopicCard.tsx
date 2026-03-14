@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FavoriteCategory, TopicListItem, getTopicCategoryMeta } from '../api/client'
 import FavoriteCategoryPicker from './FavoriteCategoryPicker'
@@ -66,6 +67,16 @@ export default function TopicCard({
     quality: 72,
     format: 'webp',
   })
+  const baseUrl = import.meta.env.BASE_URL || '/'
+  const normalizedBase = baseUrl === '/' ? '' : baseUrl.replace(/\/$/, '')
+  const sourceFallbackSrc = topic.source_preview_image
+    ? `${normalizedBase}${topic.source_preview_image.startsWith('/') ? '' : '/'}${topic.source_preview_image}`
+    : ''
+  const [previewImageFailed, setPreviewImageFailed] = useState(false)
+  const [sourcePreviewFailed, setSourcePreviewFailed] = useState(false)
+  const showPrimaryPreview = previewImageSrc && !previewImageFailed
+  const showFallbackPreview = previewImageFailed && sourceFallbackSrc && !sourcePreviewFailed
+  const showPreview = showPrimaryPreview || showFallbackPreview
 
   return (
     <div className="relative rounded-lg border border-gray-200 p-4 transition-colors hover:border-black active:bg-gray-50 sm:p-5">
@@ -107,14 +118,25 @@ export default function TopicCard({
               {topic.discussion_status !== 'pending' ? <span>AI 话题讨论</span> : null}
             </div>
           </div>
-          {previewImageSrc ? (
+          {showPreview ? (
             <div className="mt-0.5 h-16 w-16 flex-shrink-0 self-start overflow-hidden rounded-md border border-gray-100 sm:h-20 sm:w-20">
-              <img
-                src={previewImageSrc}
-                alt={`${topic.title} 预览图`}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
+              {showPrimaryPreview ? (
+                <img
+                  src={previewImageSrc}
+                  alt={`${topic.title} 预览图`}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                  onError={() => setPreviewImageFailed(true)}
+                />
+              ) : (
+                <img
+                  src={sourceFallbackSrc}
+                  alt={`${topic.title} 预览图`}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                  onError={() => setSourcePreviewFailed(true)}
+                />
+              )}
             </div>
           ) : null}
         </Link>

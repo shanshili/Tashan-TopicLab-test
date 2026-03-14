@@ -311,6 +311,7 @@ async def ensure_source_article_topic(article_id: int, user: dict | None = Depen
         source_feed_name=article.source_feed_name,
         source_type=article.source_type,
         url=article.url,
+        pic_url=article.pic_url,
     )
     created = True
 

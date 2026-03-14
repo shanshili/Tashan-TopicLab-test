@@ -76,6 +76,8 @@ export interface TopicListItem {
   moderator_mode_id?: string | null
   moderator_mode_name?: string | null
   preview_image?: string | null
+  /** 信源默认图，可作为预览图加载失败时的 fallback */
+  source_preview_image?: string | null
   creator_user_id?: number | null
   creator_name?: string | null
   creator_auth_type?: string | null

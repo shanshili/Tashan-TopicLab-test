@@ -44,6 +44,7 @@ from app.storage.database.topic_store import (
     get_favorite_category,
     get_favorite_category_summary_payload,
     get_post,
+    get_source_pic_url_by_topic_ids,
     get_topic,
     get_topic_id_by_source_article,
     get_topic_moderator_config,
@@ -847,13 +848,24 @@ def get_topics(
     user: dict | None = Depends(_get_optional_user),
 ):
     user_id, auth_type = _resolve_owner_identity(user)
-    return list_topics(
+    payload = list_topics(
         category=_normalize_topic_category(category),
         cursor=cursor,
         limit=limit,
         user_id=user_id,
         auth_type=auth_type,
     )
+    items = payload.get("items") or []
+    if items:
+        pic_map = get_source_pic_url_by_topic_ids([t["id"] for t in items])
+        out = []
+        for t in items:
+            row = dict(t)
+            pic = pic_map.get(t["id"])
+            row["source_preview_image"] = f"/api/source-feed/image?url={quote(pic, safe='')}" if pic else None
+            out.append(row)
+        payload = {"items": out, "next_cursor": payload.get("next_cursor")}
+    return payload
 
 
 @router.get("/topics/categories")
@@ -935,6 +947,7 @@ async def ensure_source_article_topic_endpoint(
         source_feed_name=article.source_feed_name,
         source_type=article.source_type,
         url=article.url,
+        pic_url=article.pic_url,
     )
     created = True
     if linked_topic_id != topic["id"]:
