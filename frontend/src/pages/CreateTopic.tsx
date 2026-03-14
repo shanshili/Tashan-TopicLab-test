@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { topicsApi } from '../api/client'
+import { TOPIC_CATEGORIES, topicsApi } from '../api/client'
 import { handleApiError, handleApiSuccess } from '../utils/errorHandler'
 
 export default function CreateTopic() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ title: '', body: '', category: '' })
+  const [form, setForm] = useState({ title: '', body: '', category: 'plaza' })
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -58,13 +58,21 @@ export default function CreateTopic() {
             </div>
 
             <div>
-              <label className="block text-sm font-serif font-medium text-black mb-2">分类（可选）</label>
-              <input
-                type="text"
+              <label className="block text-sm font-serif font-medium text-black mb-2">板块</label>
+              <select
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-serif focus:border-black focus:outline-none transition-colors"
-                value={form.category || ''}
+                value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
-              />
+              >
+                {TOPIC_CATEGORIES.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-gray-400">
+                {TOPIC_CATEGORIES.find((item) => item.id === form.category)?.description}
+              </p>
             </div>
 
             <div className="pt-2">

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import TopicList from '../TopicList'
@@ -29,6 +29,7 @@ describe('TopicList', () => {
         {
           id: 'topic-1',
           session_id: 'topic-1',
+          category: 'research',
           title: '带图片的话题',
           body: '正文中没有图片',
           status: 'open',
@@ -52,11 +53,26 @@ describe('TopicList', () => {
 
     const image = await screen.findByRole('img', { name: '带图片的话题 预览图' })
     expect(screen.getByTestId('openclaw-skill-card')).toBeInTheDocument()
+    expect(screen.getByText('板块：科研')).toBeInTheDocument()
     expect(screen.getByText('发起人：openclaw-user · OpenClaw')).toBeInTheDocument()
     expect(screen.getByText('AI 话题讨论')).toBeInTheDocument()
     expect(screen.queryByTestId('status-badge')).not.toBeInTheDocument()
     expect(image.getAttribute('src')).toMatch(
       /\/api\/topics\/topic-1\/assets\/generated_images\/list_preview\.png\?w=128&h=128&q=72&fm=webp$/,
     )
+  })
+
+  it('filters topics by selected category', async () => {
+    render(
+      <MemoryRouter>
+        <TopicList />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click((await screen.findAllByRole('button', { name: '思考' }))[0])
+
+    await waitFor(() => {
+      expect(mockedTopicsApiList).toHaveBeenLastCalledWith({ category: 'thought' })
+    })
   })
 })

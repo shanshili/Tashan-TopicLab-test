@@ -311,21 +311,37 @@ def create_topic(
     return get_topic(topic_id)
 
 
-def list_topics() -> list[dict]:
+def list_topics(category: str | None = None) -> list[dict]:
     with get_db_session() as session:
-        rows = session.execute(text("""
-            SELECT
-                t.*,
-                r.status AS run_status,
-                r.turns_count,
-                r.cost_usd,
-                r.completed_at,
-                r.discussion_summary,
-                r.discussion_history
-            FROM topics t
-            LEFT JOIN discussion_runs r ON r.topic_id = t.id
-            ORDER BY t.updated_at DESC
-        """)).fetchall()
+        if category:
+            rows = session.execute(text("""
+                SELECT
+                    t.*,
+                    r.status AS run_status,
+                    r.turns_count,
+                    r.cost_usd,
+                    r.completed_at,
+                    r.discussion_summary,
+                    r.discussion_history
+                FROM topics t
+                LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                WHERE t.category = :category
+                ORDER BY t.updated_at DESC
+            """), {"category": category}).fetchall()
+        else:
+            rows = session.execute(text("""
+                SELECT
+                    t.*,
+                    r.status AS run_status,
+                    r.turns_count,
+                    r.cost_usd,
+                    r.completed_at,
+                    r.discussion_summary,
+                    r.discussion_history
+                FROM topics t
+                LEFT JOIN discussion_runs r ON r.topic_id = t.id
+                ORDER BY t.updated_at DESC
+            """)).fetchall()
     return [topic_record_to_dict(_build_topic(row), lightweight=True) for row in rows]
 
 

@@ -51,11 +51,20 @@ _PREVIEW_DEFAULT_FORMAT = "webp"
 _PREVIEW_MAX_DIMENSION = 2048
 _DISCUSSION_SYNC_INTERVAL_SECONDS = 2.0
 
+TOPIC_CATEGORIES = [
+    {"id": "plaza", "name": "广场", "description": "适合公开发起、泛讨论和社区互动的话题。"},
+    {"id": "thought", "name": "思考", "description": "适合观点整理、开放问题和长线思辨。"},
+    {"id": "research", "name": "科研", "description": "适合论文、实验、方法和研究路线相关的话题。"},
+    {"id": "product", "name": "产品", "description": "适合功能设计、用户反馈和产品判断。"},
+    {"id": "news", "name": "资讯", "description": "适合围绕最新动态、行业消息和热点展开讨论。"},
+]
+TOPIC_CATEGORY_IDS = {item["id"] for item in TOPIC_CATEGORIES}
+
 
 class TopicCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     body: str = ""
-    category: str | None = None
+    category: str = Field(default="plaza")
 
 
 class TopicUpdateRequest(BaseModel):
@@ -320,6 +329,17 @@ def _resonnet_headers(authorization: str | None) -> dict[str, str]:
     return {"Authorization": authorization}
 
 
+def _normalize_topic_category(category: str | None) -> str | None:
+    if category is None:
+        return None
+    normalized = category.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in TOPIC_CATEGORY_IDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported topic category: {category}")
+    return normalized
+
+
 async def _proxy_to_resonnet(
     method: str,
     path: str,
@@ -484,12 +504,18 @@ async def _run_expert_reply_background(topic_id: str, reply_post_id: str, payloa
 
 
 @router.get("/topics")
-def get_topics():
-    return list_topics()
+def get_topics(category: str | None = Query(default=None)):
+    return list_topics(category=_normalize_topic_category(category))
+
+
+@router.get("/topics/categories")
+def get_topic_categories():
+    return {"list": TOPIC_CATEGORIES}
 
 
 @router.post("/topics", status_code=201)
 async def create_topic_endpoint(data: TopicCreateRequest, user: dict | None = Depends(_get_optional_user)):
+    category = _normalize_topic_category(data.category) or "plaza"
     creator_user_id = None
     creator_name = None
     creator_auth_type = None
@@ -502,7 +528,7 @@ async def create_topic_endpoint(data: TopicCreateRequest, user: dict | None = De
     return create_topic(
         data.title,
         data.body,
-        data.category,
+        category,
         creator_user_id=creator_user_id,
         creator_name=creator_name,
         creator_auth_type=creator_auth_type,
@@ -519,7 +545,10 @@ def get_topic_endpoint(topic_id: str):
 
 @router.patch("/topics/{topic_id}")
 def update_topic_endpoint(topic_id: str, data: TopicUpdateRequest):
-    updated = update_topic(topic_id, data.model_dump(exclude_unset=True))
+    payload = data.model_dump(exclude_unset=True)
+    if "category" in payload:
+        payload["category"] = _normalize_topic_category(payload["category"])
+    updated = update_topic(topic_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail="Topic not found")
     return updated

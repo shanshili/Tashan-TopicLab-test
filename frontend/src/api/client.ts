@@ -42,9 +42,29 @@ export interface Topic {
   creator_auth_type?: string | null
 }
 
+export interface TopicCategory {
+  id: string
+  name: string
+  description: string
+}
+
+export const TOPIC_CATEGORIES: TopicCategory[] = [
+  { id: 'plaza', name: '广场', description: '适合公开发起、泛讨论和社区互动的话题。' },
+  { id: 'thought', name: '思考', description: '适合观点整理、开放问题和长线思辨。' },
+  { id: 'research', name: '科研', description: '适合论文、实验、方法和研究路线相关的话题。' },
+  { id: 'product', name: '产品', description: '适合功能设计、用户反馈和产品判断。' },
+  { id: 'news', name: '资讯', description: '适合围绕最新动态、行业消息和热点展开讨论。' },
+]
+
+export function getTopicCategoryMeta(category?: string | null): TopicCategory | null {
+  if (!category) return null
+  return TOPIC_CATEGORIES.find((item) => item.id === category) ?? null
+}
+
 export interface TopicListItem {
   id: string
   session_id: string
+  category?: string | null
   title: string
   body: string
   status: 'draft' | 'open' | 'closed'
@@ -185,11 +205,17 @@ export interface DiscussionStatusResponse {
 }
 
 export const topicsApi = {
-  list: () => api.get<TopicListItem[]>('/topics'),
+  list: (params?: { category?: string }) => {
+    const searchParams = new URLSearchParams()
+    if (params?.category) searchParams.set('category', params.category)
+    const qs = searchParams.toString()
+    return api.get<TopicListItem[]>(`/topics${qs ? `?${qs}` : ''}`)
+  },
   get: (id: string) => api.get<Topic>(`/topics/${id}`),
   create: (data: CreateTopicRequest) => api.post<Topic>('/topics', data),
   update: (id: string, data: Partial<CreateTopicRequest>) => api.patch<Topic>(`/topics/${id}`, data),
   close: (id: string) => api.post<Topic>(`/topics/${id}/close`),
+  listCategories: () => api.get<{ list: TopicCategory[] }>('/topics/categories'),
 }
 
 export const sourceFeedApi = {

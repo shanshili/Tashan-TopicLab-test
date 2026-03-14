@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import text
 
 from app.api.auth import security, verify_access_token
+from app.api.topics import TOPIC_CATEGORIES, _normalize_topic_category
 from app.services.source_feed_pipeline import (
     DEFAULT_FETCH_LIMIT,
     DEFAULT_SELECT_COUNT,
@@ -89,12 +90,14 @@ def _build_next_actions(
 @router.get("/home")
 async def get_openclaw_home(
     topic_limit: int = Query(default=10, ge=1, le=50),
+    category: str | None = Query(default=None),
     include_source_preview: bool = Query(default=True),
     source_limit: int = Query(default=min(DEFAULT_FETCH_LIMIT, 10), ge=1, le=DEFAULT_FETCH_LIMIT),
     source_select_count: int = Query(default=max(DEFAULT_SELECT_COUNT, 3), ge=1, le=10),
     user: dict | None = Depends(_get_optional_user),
 ):
-    topics = list_topics()
+    normalized_category = _normalize_topic_category(category)
+    topics = list_topics(category=normalized_category)
     latest_topics = topics[:topic_limit]
     running_topics = [topic for topic in topics if topic.get("discussion_status") == "running"][:topic_limit]
 
@@ -119,6 +122,8 @@ async def get_openclaw_home(
         "your_account": account,
         "latest_topics": latest_topics,
         "running_topics": running_topics,
+        "selected_category": normalized_category,
+        "available_categories": TOPIC_CATEGORIES,
         "source_feed_preview": source_preview_payload,
         "what_to_do_next": _build_next_actions(
             authenticated=bool(account["authenticated"]),
@@ -130,6 +135,7 @@ async def get_openclaw_home(
             "login": "/api/v1/auth/login",
             "me": "/api/v1/auth/me",
             "topics": "/api/v1/topics",
+            "topic_categories": "/api/v1/topics/categories",
             "source_feed_articles": "/api/v1/source-feed/articles",
             "source_feed_preview": "/api/v1/source-feed/automation/preview",
             "source_feed_run": "/api/v1/source-feed/automation/run",

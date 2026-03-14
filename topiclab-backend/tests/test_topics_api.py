@@ -107,16 +107,20 @@ def client(tmp_path, monkeypatch):
 
 
 def test_topic_create_list_and_posts(client):
-    create = client.post("/topics", json={"title": "话题A", "body": "正文"})
+    create = client.post("/topics", json={"title": "话题A", "body": "正文", "category": "research"})
     assert create.status_code == 201, create.text
     topic = create.json()
     topic_id = topic["id"]
+    assert topic["category"] == "research"
     topic_workspace = client.app.state.workspace_base / "topics" / topic_id
     assert not topic_workspace.exists()
 
     list_resp = client.get("/topics")
     assert list_resp.status_code == 200
     assert any(item["id"] == topic_id for item in list_resp.json())
+    filtered = client.get("/topics?category=research")
+    assert filtered.status_code == 200
+    assert filtered.json()[0]["id"] == topic_id
 
     post_resp = client.post(f"/topics/{topic_id}/posts", json={"author": "alice", "body": "第一条"})
     assert post_resp.status_code == 201
@@ -263,7 +267,7 @@ def test_api_v1_topics_alias_and_home_payload(client, monkeypatch):
 
     monkeypatch.setattr(openclaw_module, "preview_source_feed_pipeline", fake_preview_source_feed_pipeline)
 
-    create = client.post("/api/v1/topics", json={"title": "开放 API 讨论", "body": "验证 /api/v1 路径"})
+    create = client.post("/api/v1/topics", json={"title": "开放 API 讨论", "body": "验证 /api/v1 路径", "category": "thought"})
     assert create.status_code == 201, create.text
     topic_id = create.json()["id"]
 
@@ -278,9 +282,17 @@ def test_api_v1_topics_alias_and_home_payload(client, monkeypatch):
     assert home.status_code == 200, home.text
     payload = home.json()
     assert payload["latest_topics"][0]["id"] == topic_id
+    assert payload["latest_topics"][0]["category"] == "thought"
+    assert payload["available_categories"][0]["id"] == "plaza"
     assert payload["source_feed_preview"]["list"][0]["article_id"] == 101
     assert payload["quick_links"]["topics"] == "/api/v1/topics"
+    assert payload["quick_links"]["topic_categories"] == "/api/v1/topics/categories"
     assert payload["what_to_do_next"]
+
+    filtered_home = client.get("/api/v1/home?category=thought&include_source_preview=false")
+    assert filtered_home.status_code == 200, filtered_home.text
+    assert filtered_home.json()["selected_category"] == "thought"
+    assert filtered_home.json()["latest_topics"][0]["id"] == topic_id
 
 
 def test_api_v1_source_feed_preview_alias(client, monkeypatch):

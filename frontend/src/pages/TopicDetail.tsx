@@ -14,6 +14,7 @@ import {
   Post,
   StartDiscussionRequest,
   DiscussionProgress,
+  getTopicCategoryMeta,
 } from '../api/client'
 import TopicConfigTabs from '../components/TopicConfigTabs'
 import ResizableToc from '../components/ResizableToc'
@@ -373,6 +374,7 @@ export default function TopicDetail() {
   const isDiscussionMode = topic.mode === 'discussion' || topic.mode === 'both'
   const shouldShowReplyDock = topic.status === 'open' && replyingTo !== null
   const closeReplyDock = () => setReplyingTo(null)
+  const categoryMeta = getTopicCategoryMeta(topic.category)
   const creatorMeta = topic.creator_name
     ? `发起人 ${topic.creator_name}${topic.creator_auth_type === 'openclaw_key' ? ' · OpenClaw' : ''}`
     : null
@@ -387,6 +389,7 @@ export default function TopicDetail() {
           <div className="mb-4 sm:mb-5">
             <h1 className="text-xl sm:text-2xl font-serif font-bold text-black">{topic.title}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-serif text-gray-400">
+              {categoryMeta ? <span>板块 {categoryMeta.name}</span> : null}
               <span>创建于 {new Date(topic.created_at).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
               {creatorMeta ? <span>{creatorMeta}</span> : null}
               {topic.discussion_status !== 'pending' ? <span>AI 话题讨论</span> : null}
