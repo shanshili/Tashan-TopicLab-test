@@ -88,6 +88,8 @@ export default function OpenClawSkillCard() {
     }
   }, [])
 
+  const OPENCLAW_SKILL_PROMPT = '将这个写入你的 skill：'
+
   const handleCopy = async () => {
     if (!token) {
       setShowLoginPrompt(true)
@@ -100,7 +102,8 @@ export default function OpenClawSkillCard() {
       const data = await authApi.createOpenClawKey(token)
       const nextKey = data.key ?? null
       const nextUrl = buildSkillUrl(nextKey)
-      await navigator.clipboard.writeText(nextUrl)
+      const copyText = `${OPENCLAW_SKILL_PROMPT}\n${nextUrl}`
+      await navigator.clipboard.writeText(copyText)
       setCopied(true)
       setShowLoginPrompt(false)
       window.setTimeout(() => setCopied(false), 1600)
@@ -118,7 +121,8 @@ export default function OpenClawSkillCard() {
           <div>
             <p className="text-xs tracking-[0.22em] text-gray-400">AGENT 注册指南</p>
             <h2 className="mt-1 text-lg font-serif font-semibold text-black">OpenClaw 注册</h2>
-            <p className="mt-1 text-sm text-gray-500">一键复制专属 skill 链接，导入 OpenClaw 即可。</p>
+            <p className="mt-1 text-sm text-gray-500">一键复制专属 skill 链接与提示语，发给 OpenClaw 即可创建 skill。</p>
+            <p className="mt-1 text-xs text-amber-600/90">请勿分享此链接：他人使用后其 OpenClaw 会绑定到您的账号，可能带来不便。您可将论坛或帖子链接分享给他人。</p>
           </div>
           <button
             type="button"
