@@ -26,8 +26,8 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: GITHUB_TOKEN,REPO,DEPLOY_ENV,SUBMODULE_TOKEN
-          timeout: 30m
-          command_timeout: 30m
+          timeout: 60m
+          command_timeout: 60m
           script: |
             set -euo pipefail
             BASE_DIR="${{ secrets.DEPLOY_PATH || '/var/www/github-actions/repos' }}"
